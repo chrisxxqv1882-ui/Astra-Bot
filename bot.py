@@ -2,9 +2,9 @@ import discord
 from discord import app_commands
 import os
 
-# Configuración inicial global editable
+# Configuración global editable
 config_global = {
-    "admin_rol_id": None, # Rol requerido para usar los comandos del bot (si es None, solo administradores de Discord)
+    "admin_rol_id": None, 
     "rol_id": 1549479823200747521,
     "categoria_id": None,
     "titulo": "⚖️ Sistema de Apelaciones",
@@ -14,8 +14,10 @@ config_global = {
     "thumbnail": None,
     "image": None,
     "footer": "Sistema seguro de apelaciones",
-    "ticket_titulo": "📥 ¡Nueva Apelación Recibida!",
-    "ticket_descripcion": "El usuario {usuario} ha enviado una apelación.\n\n**Motivo:**\n{razon}"
+    # Configuración del embed que aparece DENTRO del ticket creado
+    "ticket_embed_titulo": "📥 ¡Nuevo Ticket / Apelación Abierto!",
+    "ticket_embed_descripcion": "El usuario {usuario} ha iniciado un caso.\n\n**Motivo / Razón:**\n{razon}",
+    "ticket_embed_footer": "Atiende con respeto y profesionalismo."
 }
 
 apelaciones_db = []
@@ -35,7 +37,6 @@ client = Bot()
 async def on_ready():
     print(f'¡Bot conectado con éxito como {client.user}!')
 
-# Función para verificar si el usuario tiene permisos (Administrador o el Rol Configurado)
 def verificar_permisos(interaction: discord.Interaction) -> bool:
     if interaction.user.guild_permissions.administrator:
         return True
@@ -45,16 +46,16 @@ def verificar_permisos(interaction: discord.Interaction) -> bool:
             return True
     return False
 
-# --- MODALES PARA EDITAR CADA PARTE DEL EMBED VISUALMENTE ---
+# --- MODALES PARA EDITAR TEXTOS Y URLS ---
 
 class ModalEditarTexto(discord.ui.Modal):
     def __init__(self, campo: str):
-        super().__init__(title=f"Editar {campo.capitalize()}")
+        super().__init__(title=f"Editar {campo.replace('_', ' ').capitalize()}")
         self.campo = campo
         
         self.valor = discord.ui.TextInput(
-            label=f"Nuevo valor para {campo}",
-            style=discord.TextStyle.paragraph if campo in ["descripcion", "ticket_descripcion"] else discord.TextStyle.short,
+            label=f"Nuevo valor",
+            style=discord.TextStyle.paragraph if "descripcion" in campo else discord.TextStyle.short,
             placeholder="Escribe aquí...",
             required=True,
             max_length=1000
@@ -63,7 +64,7 @@ class ModalEditarTexto(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         config_global[self.campo] = self.valor.value
-        await interaction.response.send_message(f"✅ ¡{self.campo.capitalize()} actualizado con éxito!", ephemeral=True)
+        await interaction.response.send_message(f"✅ ¡{self.campo.replace('_', ' ').capitalize()} actualizado con éxito!", ephemeral=True)
 
 class ModalEditarURLs(discord.ui.Modal):
     def __init__(self, campo: str):
@@ -71,7 +72,7 @@ class ModalEditarURLs(discord.ui.Modal):
         self.campo = campo
         
         self.valor = discord.ui.TextInput(
-            label=f"Enlace URL (o escribe 'none' para quitar)",
+            label="Enlace URL (o escribe 'none' para quitar)",
             style=discord.TextStyle.short,
             placeholder="https://...",
             required=True
@@ -83,28 +84,24 @@ class ModalEditarURLs(discord.ui.Modal):
         config_global[self.campo] = None if val.lower() == "none" else val
         await interaction.response.send_message(f"✅ ¡{self.campo.capitalize()} actualizado!", ephemeral=True)
 
-# --- VISTA CON LOS BOTONES DEL EDITOR VISUAL ---
+# --- VISTA DEL EDITOR VISUAL ---
 
 class VistaEditorVisual(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✏ Título", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="✏ Título Panel", style=discord.ButtonStyle.primary, row=0)
     async def btn_titulo(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalEditarTexto("titulo"))
 
-    @discord.ui.button(label="👤 Autor", style=discord.ButtonStyle.primary, row=0)
-    async def btn_autor(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("autor"))
-
-    @discord.ui.button(label="📄 Descripción", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📄 Desc. Panel", style=discord.ButtonStyle.primary, row=0)
     async def btn_desc(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalEditarTexto("descripcion"))
 
     @discord.ui.button(label="🎨 Color (Hex)", style=discord.ButtonStyle.primary, row=0)
     async def btn_color(self, interaction: discord.Interaction, button: discord.ui.Button):
         class ModalColor(discord.ui.Modal, title="Editar Color"):
-            hex_val = discord.ui.TextInput(label="Código Hex (ej: #ff0000)", placeholder="#3498db", required=True)
+            hex_val = discord.ui.TextInput(label="Código Hex (ej: #3498db)", placeholder="#3498db", required=True)
             async def on_submit(self, inter: discord.Interaction):
                 try:
                     config_global["color"] = int(hex_val.value.replace("#", ""), 16)
@@ -113,19 +110,23 @@ class VistaEditorVisual(discord.ui.View):
                     await inter.response.send_message("❌ Código HEX inválido.", ephemeral=True)
         await interaction.response.send_modal(ModalColor())
 
-    @discord.ui.button(label="📌 Footer (Pie)", style=discord.ButtonStyle.secondary, row=1)
-    async def btn_footer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("footer"))
+    @discord.ui.button(label="📥 Título Ticket", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_tticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModalEditarTexto("ticket_embed_titulo"))
 
-    @discord.ui.button(label="🖼️ Thumbnail (Miniatura)", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="📄 Desc. Ticket", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_dticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModalEditarTexto("ticket_embed_descripcion"))
+
+    @discord.ui.button(label="🖼️ Thumbnail", style=discord.ButtonStyle.success, row=2)
     async def btn_thumb(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalEditarURLs("thumbnail"))
 
-    @discord.ui.button(label="📸 Imagen Grande", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="📸 Imagen", style=discord.ButtonStyle.success, row=2)
     async def btn_image(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalEditarURLs("image"))
 
-    @discord.ui.button(label="🚀 Publicar Panel", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="🚀 Publicar Panel", style=discord.ButtonStyle.danger, row=2)
     async def btn_publicar(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title=config_global["titulo"],
@@ -138,19 +139,21 @@ class VistaEditorVisual(discord.ui.View):
         if config_global["footer"]: embed.set_footer(text=config_global["footer"])
 
         await interaction.channel.send(embed=embed, view=VistaApelacionBotonesPublico())
-        await interaction.response.send_message("✅ ¡Panel de apelaciones publicado oficialmente en este canal!", ephemeral=True)
+        await interaction.response.send_message("✅ ¡Panel de apelaciones y reclamaciones publicado con éxito!", ephemeral=True)
+
+# --- BOTÓN PÚBLICO Y MODAL DE APELACIÓN/TICKET ---
 
 class VistaApelacionBotonesPublico(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📝 Apelar Sanción", style=discord.ButtonStyle.danger, custom_id="btn_apelar_user")
+    @discord.ui.button(label="🎫 Abrir Ticket / Reclamación", style=discord.ButtonStyle.danger, custom_id="btn_abrir_ticket")
     async def boton_apelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ApelacionModal())
 
-class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
+class ApelacionModal(discord.ui.Modal, title="Formulario de Reclamación / Ticket"):
     razon = discord.ui.TextInput(
-        label="¿Por qué deberíamos aceptar tu apelación?",
+        label="Motivo de tu ticket o reclamación",
         style=discord.TextStyle.paragraph,
         placeholder="Explica detalladamente tu caso...",
         required=True,
@@ -165,28 +168,42 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
         }
-        if rol_obj: overwrites[rol_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        if rol_obj: overwrites[rol_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
 
-        canal = await guild.create_text_channel(f"apelacion-{interaction.user.name}".lower(), category=categoria, overwrites=overwrites)
+        canal = await guild.create_text_channel(f"ticket-{interaction.user.name}".lower(), category=categoria, overwrites=overwrites)
         if canal:
-            embed_aviso = discord.Embed(
-                title=config_global["ticket_titulo"],
-                description=config_global["ticket_descripcion"].format(usuario=interaction.user.mention, razon=self.razon.value),
+            # Embed personalizado que aparece DENTRO del canal del ticket
+            embed_ticket = discord.Embed(
+                title=config_global["ticket_embed_titulo"],
+                description=config_global["ticket_embed_descripcion"].format(usuario=interaction.user.mention, razon=self.razon.value),
                 color=config_global["color"]
             )
+            embed_ticket.set_footer(text=config_global["ticket_embed_footer"])
+            
+            # Botón opcional dentro del ticket para cerrarlo
+            class VistaCerrarTicket(discord.ui.View):
+                @discord.ui.button(label="🔒 Cerrar Ticket", style=discord.ButtonStyle.secondary, custom_id="cerrar_tk")
+                async def cerrar(self, inter: discord.Interaction, btn: discord.ui.Button):
+                    await inter.response.send_message("🔒 Cerrando canal en 3 segundos...")
+                    import asyncio
+                    await asyncio.sleep(3)
+                    await inter.channel.delete()
+
             mencion = f"<@&{config_global['rol_id']}>" if rol_obj else ""
-            await canal.send(content=f"{mencion} ¡Nueva apelación creada!", embed=embed_aviso)
-            await interaction.response.send_message(f"✅ ¡Creado en {canal.mention}!", ephemeral=True)
+            await canal.send(content=f"{mencion} ¡Nuevo ticket abierto por {interaction.user.mention}!", embed=embed_ticket, view=VistaCerrarTicket())
+            await interaction.response.send_message(f"✅ ¡Tu ticket ha sido creado correctamente en {canal.mention}!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Hubo un error al crear el canal.", ephemeral=True)
 
 
-# --- COMANDOS PRINCIPALES ---
+# --- COMANDOS ---
 
-@client.tree.command(name="configurar", description="Abre el panel visual interactivo para diseñar el embed de apelaciones")
+@client.tree.command(name="configurar", description="Abre el editor visual avanzado del bot")
 async def configurar(interaction: discord.Interaction):
     if not verificar_permisos(interaction):
-        await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+        await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
         return
 
     embed_preview = discord.Embed(
@@ -200,50 +217,29 @@ async def configurar(interaction: discord.Interaction):
     if config_global["footer"]: embed_preview.set_footer(text=config_global["footer"])
 
     await interaction.response.send_message(
-        content="✨ **Editor Visual de Apelaciones**\nUsa los botones de abajo para personalizar cada parte del embed en tiempo real:",
+        content="✨ **Editor Visual del Sistema de Tickets / Reclamaciones**\nUsa los botones para personalizar el panel público y el mensaje interno del ticket:",
         embed=embed_preview,
         view=VistaEditorVisual(),
         ephemeral=True
     )
 
-@client.tree.command(name="configurar_sistema", description="Define el rol autorizado para comandos, rol del staff y categoría de tickets")
-@app_commands.describe(
-    rol_comandos="Rol que podrá usar los comandos del bot",
-    rol_staff="Rol del staff que atenderá las apelaciones",
-    categoria_id="ID de la categoría de Discord para los canales"
-)
+@client.tree.command(name="configurar_sistema", description="Define los roles y categoría")
 async def configurar_sistema(interaction: discord.Interaction, rol_comandos: discord.Role = None, rol_staff: discord.Role = None, categoria_id: str = None):
     if not verificar_permisos(interaction):
-        await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+        await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
         return
 
     texto_resp = "✅ **Configuración actualizada:**\n"
     if rol_comandos:
         config_global["admin_rol_id"] = rol_comandos.id
-        texto_resp += f"- Rol autorizado para comandos: {rol_comandos.mention}\n"
+        texto_resp += f"- Rol comandos: {rol_comandos.mention}\n"
     if rol_staff:
         config_global["rol_id"] = rol_staff.id
-        texto_resp += f"- Rol del staff para tickets: {rol_staff.mention}\n"
+        texto_resp += f"- Rol staff tickets: {rol_staff.mention}\n"
     if categoria_id:
         config_global["categoria_id"] = categoria_id
-        texto_resp += f"- ID de categoría: `{categoria_id}`\n"
+        texto_resp += f"- Categoría ID: `{categoria_id}`\n"
 
     await interaction.response.send_message(texto_resp, ephemeral=True)
-
-
-@client.tree.command(name="apelaciones_pendientes", description="Muestra la lista de apelaciones registradas")
-async def apelaciones_pendientes(interaction: discord.Interaction):
-    tiene_rol = any(role.id == config_global["rol_id"] for role in interaction.user.roles)
-    if not tiene_rol and not verificar_permisos(interaction):
-        await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
-        return
-    if not apelaciones_db:
-        await interaction.response.send_message("📂 No hay apelaciones pendientes.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title="📋 Apelaciones Registradas", color=discord.Color.yellow())
-    for i, ap in enumerate(apelaciones_db[:10], 1):
-        embed.add_field(name=f"#{i} - {ap['usuario']}", value=f"**ID:** `{ap['id_usuario']}`\n**Razón:** {ap['razon'][:200]}...", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 client.run(os.environ['DISCORD_TOKEN'])
