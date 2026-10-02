@@ -1,21 +1,21 @@
 import discord
 from discord import app_commands
 import os
+import random
 
 # Configuración global editable
 config_global = {
     "admin_rol_id": None, 
     "rol_id": 1549479823200747521,
     "categoria_id": None,
-    "titulo": "⚖️ Sistema de Apelaciones",
-    "descripcion": "Si fuiste sancionado y deseas apelar, haz clic en el botón de abajo para rellenar tu formulario.",
+    "titulo": "⚖️ Sistema de Apelaciones y Reclamaciones",
+    "descripcion": "Si necesitas abrir un ticket, reclamar o apelar una sanción, haz clic en el botón de abajo.",
     "color": 0x3498db,
     "autor": "Hakkuze - Moderación",
     "thumbnail": None,
     "image": None,
-    "footer": "Sistema seguro de apelaciones",
-    # Configuración del embed que aparece DENTRO del ticket creado
-    "ticket_embed_titulo": "📥 ¡Nuevo Ticket / Apelación Abierto!",
+    "footer": "Sistema seguro de tickets",
+    "ticket_embed_titulo": "📥 ¡Nuevo Ticket Abierto!",
     "ticket_embed_descripcion": "El usuario {usuario} ha iniciado un caso.\n\n**Motivo / Razón:**\n{razon}",
     "ticket_embed_footer": "Atiende con respeto y profesionalismo."
 }
@@ -46,7 +46,7 @@ def verificar_permisos(interaction: discord.Interaction) -> bool:
             return True
     return False
 
-# --- MODALES PARA EDITAR TEXTOS Y URLS ---
+# --- MODALES PARA EL EDITOR VISUAL ---
 
 class ModalEditarTexto(discord.ui.Modal):
     def __init__(self, campo: str):
@@ -54,7 +54,7 @@ class ModalEditarTexto(discord.ui.Modal):
         self.campo = campo
         
         self.valor = discord.ui.TextInput(
-            label=f"Nuevo valor",
+            label="Nuevo valor",
             style=discord.TextStyle.paragraph if "descripcion" in campo else discord.TextStyle.short,
             placeholder="Escribe aquí...",
             required=True,
@@ -82,7 +82,7 @@ class ModalEditarURLs(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         val = self.valor.value.strip()
         config_global[self.campo] = None if val.lower() == "none" else val
-        await interaction.response.send_message(f"✅ ¡{self.campo.capitalize()} actualizado!", ephemeral=True)
+        await interaction.response.send_message(f"✅ ¡{self.capitalize()} actualizado!", ephemeral=True)
 
 # --- VISTA DEL EDITOR VISUAL ---
 
@@ -139,9 +139,7 @@ class VistaEditorVisual(discord.ui.View):
         if config_global["footer"]: embed.set_footer(text=config_global["footer"])
 
         await interaction.channel.send(embed=embed, view=VistaApelacionBotonesPublico())
-        await interaction.response.send_message("✅ ¡Panel de apelaciones y reclamaciones publicado con éxito!", ephemeral=True)
-
-# --- BOTÓN PÚBLICO Y MODAL DE APELACIÓN/TICKET ---
+        await interaction.response.send_message("✅ ¡Panel de tickets publicado con éxito!", ephemeral=True)
 
 class VistaApelacionBotonesPublico(discord.ui.View):
     def __init__(self):
@@ -174,7 +172,6 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Reclamación / Ticke
 
         canal = await guild.create_text_channel(f"ticket-{interaction.user.name}".lower(), category=categoria, overwrites=overwrites)
         if canal:
-            # Embed personalizado que aparece DENTRO del canal del ticket
             embed_ticket = discord.Embed(
                 title=config_global["ticket_embed_titulo"],
                 description=config_global["ticket_embed_descripcion"].format(usuario=interaction.user.mention, razon=self.razon.value),
@@ -182,7 +179,6 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Reclamación / Ticke
             )
             embed_ticket.set_footer(text=config_global["ticket_embed_footer"])
             
-            # Botón opcional dentro del ticket para cerrarlo
             class VistaCerrarTicket(discord.ui.View):
                 @discord.ui.button(label="🔒 Cerrar Ticket", style=discord.ButtonStyle.secondary, custom_id="cerrar_tk")
                 async def cerrar(self, inter: discord.Interaction, btn: discord.ui.Button):
@@ -198,7 +194,7 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Reclamación / Ticke
             await interaction.response.send_message("❌ Hubo un error al crear el canal.", ephemeral=True)
 
 
-# --- COMANDOS ---
+# --- COMANDOS DE CONFIGURACIÓN ---
 
 @client.tree.command(name="configurar", description="Abre el editor visual avanzado del bot")
 async def configurar(interaction: discord.Interaction):
@@ -217,7 +213,7 @@ async def configurar(interaction: discord.Interaction):
     if config_global["footer"]: embed_preview.set_footer(text=config_global["footer"])
 
     await interaction.response.send_message(
-        content="✨ **Editor Visual del Sistema de Tickets / Reclamaciones**\nUsa los botones para personalizar el panel público y el mensaje interno del ticket:",
+        content="✨ **Editor Visual del Sistema de Tickets**\nUsa los botones para personalizar el panel público y el mensaje interno:",
         embed=embed_preview,
         view=VistaEditorVisual(),
         ephemeral=True
@@ -241,5 +237,57 @@ async def configurar_sistema(interaction: discord.Interaction, rol_comandos: dis
         texto_resp += f"- Categoría ID: `{categoria_id}`\n"
 
     await interaction.response.send_message(texto_resp, ephemeral=True)
+
+
+# --- COMANDOS DE INFORMACIÓN Y UTILIDADES INTERACTIVAS ---
+
+@client.tree.command(name="usuario", description="Muestra información interactiva de un usuario")
+@app_commands.describe(miembro="Selecciona al usuario del que quieres ver información")
+async def usuario(interaction: discord.Interaction, miembro: discord.Member = None):
+    usuario_obj = miembro if miembro else interaction.user
+    embed = discord.Embed(title=f"👤 Información de {usuario_obj.name}", color=usuario_obj.color)
+    embed.set_thumbnail(url=usuario_obj.display_avatar.url)
+    embed.add_field(name="🆔 ID", value=usuario_obj.id, inline=True)
+    embed.add_field(name="📅 Creación de cuenta", value=usuario_obj.created_at.strftime("%d/%m/%Y"), inline=True)
+    embed.add_field(name="📥 Ingreso al servidor", value=usuario_obj.joined_at.strftime("%d/%m/%Y") if usuario_obj.joined_at else "Desconocido", inline=True)
+    
+    roles = [role.mention for role in usuario_obj.roles if role != interaction.guild.default_role]
+    roles_str = ", ".join(roles) if roles else "Ninguno"
+    if len(roles_str) > 1024: roles_str = "Muchos roles asignados"
+    embed.add_field(name=f"🛡️ Roles ({len(roles)})", value=roles_str, inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@client.tree.command(name="servidor", description="Muestra información general del servidor")
+async def servidor(interaction: discord.Interaction):
+    guild = interaction.guild
+    embed = discord.Embed(title=f"📊 Información de {guild.name}", color=discord.Color.purple())
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.add_field(name="👑 Owner", value=guild.owner.mention if guild.owner else "Desconocido", inline=True)
+    embed.add_field(name="👥 Miembros", value=str(guild.member_count), inline=True)
+    embed.add_field(name="📅 Creación", value=guild.created_at.strftime("%d/%m/%Y"), inline=True)
+    embed.add_field(name="💬 Canales de texto", value=str(len(guild.text_channels)), inline=True)
+    await interaction.response.send_message(embed=embed)
+
+@client.tree.command(name="encuesta", description="Crea una encuesta interactiva rápida")
+@app_commands.describe(pregunta="Escribe la pregunta o propuesta para la encuesta")
+async def encuesta(interaction: discord.Interaction, pregunta: str):
+    embed = discord.Embed(title="📊 Encuesta Oficial", description=pregunta, color=discord.Color.blue())
+    embed.set_footer(text=f"Encuesta creada por {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.response.send_message("✅ ¡Encuesta creada con éxito!")
+    mensaje = await interaction.original_response()
+    await mensaje.add_reaction("👍")
+    await mensaje.add_reaction("👎")
+
+@client.tree.command(name="dado", description="Lanza un dado interactivo")
+@app_commands.describe(caras="Número de caras del dado (por defecto 6)")
+async def dado(interaction: discord.Interaction, caras: int = 6):
+    if caras < 2:
+        await interaction.response.send_message("❌ El dado debe tener al menos 2 caras.", ephemeral=True)
+        return
+    resultado = random.randint(1, caras)
+    await interaction.response.send_message(f"🎲 {interaction.user.mention} lanzó un dado de {caras} caras y salió: **{resultado}**")
 
 client.run(os.environ['DISCORD_TOKEN'])
