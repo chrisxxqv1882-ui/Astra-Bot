@@ -1,11 +1,11 @@
 import discord
-from discord import app_commands
+from discord.ext import commands
 import os
 
 # IDs de configuración
 ROL_ALTO_MANDO = 1549479823200747521
 
-# Memoria temporal para guardar las apelaciones pendientes y configuraciones de embeds
+# Memoria temporal
 apelaciones_db = []
 config_apelacion_embed = {
     "titulo": "⚖️ Sistema de Apelaciones - Hakkuze",
@@ -18,6 +18,15 @@ config_apelacion_embed = {
     "ticket_titulo": "📥 ¡Nueva Apelación Recibida!",
     "ticket_descripcion": "El usuario {usuario} ha enviado una apelación.\n\n**Motivo:**\n{razon}"
 }
+
+# Configuración del bot con el prefijo a¡
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="a¡", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f'¡Bot conectado con éxito como {bot.user}!')
 
 # Modal para el formulario de Apelación
 class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
@@ -52,7 +61,6 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
                 canal = None
 
         if canal:
-            # Usar la configuración personalizada del ticket
             desc_formateada = config_apelacion_embed["ticket_descripcion"].format(
                 usuario=interaction.user.mention,
                 razon=self.razon.value
@@ -66,7 +74,6 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
 
         await interaction.response.send_message("✅ ¡Tu apelación ha sido enviada exitosamente al Alto Mando para su revisión!", ephemeral=True)
 
-# Vistas de Botones
 class VistaPostulaciones(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -74,18 +81,13 @@ class VistaPostulaciones(discord.ui.View):
     @discord.ui.button(label="🛡️ Postulación Staff", style=discord.ButtonStyle.primary, custom_id="btn_staff")
     async def btn_staff(self, interaction: discord.Interaction, button: discord.ui.Button):
         formulario = (
-            "🛡️ **POSTULACIÓN STAFF — HAKKUZE**\n\n"
-            "👤 **INFORMACIÓN**\n\n"
-            "**1. Nombre / Apodo:**\nRespuesta:\n\n"
-            "**2. Edad:**\nRespuesta:\n\n"
-            "**3. País / Zona horaria:**\nRespuesta:\n\n"
-            "**4. ¿Cuánto tiempo llevas en Hakkuze?**\nRespuesta:\n\n"
-            "🎯 **EXPERIENCIA**\n\n"
-            "**5. ¿Has sido Staff anteriormente?**\nSí / No\n\n"
-            "**6. ¿Qué experiencia tienes moderando servidores?**\nRespuesta:\n\n"
-            "💎 **MOTIVACIÓN**\n\n"
-            "**7. ¿Por qué quieres ser Staff de Hakkuze?**\nRespuesta:\n\n"
-            "**8. ¿Cuánto tiempo puedes dedicar diariamente?**\nRespuesta:"
+            "🛡️️ **POSTULACIÓN STAFF — HAKKUZE**\n\n"
+            "👤 **INFORMACIÓN**\n"
+            "**1. Nombre / Apodo:**\n**2. Edad:**\n**3. País / Zona horaria:**\n**4. ¿Cuánto tiempo llevas en Hakkuze?**\n\n"
+            "🎯 **EXPERIENCIA**\n"
+            "**5. ¿Has sido Staff anteriormente?**\n**6. ¿Qué experiencia tienes moderando?**\n\n"
+            "💎 **MOTIVACIÓN**\n"
+            "**7. ¿Por qué quieres ser Staff?**\n**8. ¿Cuánto tiempo puedes dedicar?**"
         )
         await interaction.response.send_message(formulario, ephemeral=True)
 
@@ -93,12 +95,9 @@ class VistaPostulaciones(discord.ui.View):
     async def btn_alianzas(self, interaction: discord.Interaction, button: discord.ui.Button):
         form_alianzas = (
             "🤝 **POSTULACIÓN | CAZA ALIANZAS — HAKKUZE**\n\n"
-            "**1. 👤 Usuario de Discord:**\nRespuesta:\n\n"
-            "**2. 🎂 Edad:**\nRespuesta:\n\n"
-            "**3. 💼 ¿Has trabajado haciendo alianzas anteriormente?**\nRespuesta:\n\n"
-            "**4. 📊 ¿Cuántas alianzas podrías conseguir semanalmente?**\nRespuesta:\n\n"
-            "**5. 🗣️ ¿Por qué quieres formar parte del equipo?**\nRespuesta:\n\n"
-            "🔒 *La información será revisada exclusivamente por el Staff.*"
+            "**1. 👤 Usuario de Discord:**\n**2. 🎂 Edad:**\n**3. 💼 ¿Has trabajado en alianzas antes?**\n"
+            "**4. 📊 Alianzas semanales estimadas:**\n**5. 🗣️ ¿Por qué quieres unirte?**\n\n"
+            "🔒 *Revisado exclusivamente por el Staff.*"
         )
         await interaction.response.send_message(form_alianzas, ephemeral=True)
 
@@ -111,50 +110,31 @@ class VistaApelacionBotones(discord.ui.View):
         await interaction.response.send_modal(ApelacionModal())
 
 
-class Bot(discord.Client):
-    def __init__(self):
-        super().__init__(intents=discord.Intents.default())
-        self.tree = app_commands.CommandTree(self)
+# COMANDOS CON PREFIJO a¡
 
-    async def setup_hook(self):
-        await self.tree.sync()
-        print("¡Slash commands sincronizados!")
+@bot.command(name="postulacion")
+async def postulacion(ctx):
+    await ctx.send("🛡️ **POSTULACIÓN STAFF — HAKKUZE**\nCopia y responde este formato en privado con un administrador.")
 
-client = Bot()
+@bot.command(name="caza_alianzas")
+async def caza_alianzas(ctx):
+    await ctx.send("🤝 **POSTULACIÓN | CAZA ALIANZAS — HAKKUZE**\nCopia y responde este formato...")
 
-@client.event
-async def on_ready():
-    print(f'¡Bot conectado con éxito como {client.user}!')
-
-# Comando individual: Postulación General
-@client.tree.command(name="postulacion", description="Envía el formulario de postulación para el staff")
-async def postulacion(interaction: discord.Interaction):
-    formulario = "🛡️ **POSTULACIÓN STAFF — HAKKUZE**\nCopia y responde este formato..."
-    await interaction.response.send_message(formulario)
-
-# Comando individual: Caza Alianzas
-@client.tree.command(name="caza_alianzas", description="Envía el formulario para Caza Alianzas")
-async def caza_alianzas(interaction: discord.Interaction):
-    form_alianzas = "🤝 **POSTULACIÓN | CAZA ALIANZAS — HAKKUZE**\nCopia y responde este formato..."
-    await interaction.response.send_message(form_alianzas)
-
-# COMANDO CONFIG: Muestra el panel con todas las postulaciones disponibles mediante botones
-@client.tree.command(name="config", description="Envía el panel central de postulaciones de Hakkuze")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_panel(interaction: discord.Interaction):
+@bot.command(name="config")
+@commands.has_permissions(administrator=True)
+async def config_panel(ctx):
     embed = discord.Embed(
         title="📋 Centro de Postulaciones - Hakkuze",
         description="Selecciona el botón correspondiente al formulario en el que deseas postularte:",
         color=discord.Color.purple()
     )
     embed.set_footer(text="Hakkuze Official • Sistema de Reclutamiento")
-    await interaction.channel.send(embed=embed, view=VistaPostulaciones())
-    await interaction.response.send_message("✅ ¡Panel de configuraciones/postulaciones enviado con éxito!", ephemeral=True)
+    await ctx.send(embed=embed, view=VistaPostulaciones())
+    await ctx.message.delete()
 
-# COMANDO PARA CREAR EL PANEL DE APELACIONES PERSONALIZADO
-@client.tree.command(name="panel_apelaciones", description="Envía el panel de apelaciones configurado")
-@app_commands.checks.has_permissions(administrator=True)
-async def panel_apelaciones(interaction: discord.Interaction):
+@bot.command(name="panel_apelaciones")
+@commands.has_permissions(administrator=True)
+async def panel_apelaciones(ctx):
     embed = discord.Embed(
         title=config_apelacion_embed["titulo"],
         description=config_apelacion_embed["descripcion"],
@@ -169,59 +149,47 @@ async def panel_apelaciones(interaction: discord.Interaction):
     if config_apelacion_embed["footer"]:
         embed.set_footer(text=config_apelacion_embed["footer"])
 
-    await interaction.channel.send(embed=embed, view=VistaApelacionBotones())
-    await interaction.response.send_message("✅ ¡Panel de apelaciones desplegado!", ephemeral=True)
+    await ctx.send(embed=embed, view=VistaApelacionBotones())
+    await ctx.message.delete()
 
-# COMANDO PARA CONFIGURAR TODOS LOS DETALLES DEL EMBED DE APELACIÓN Y SU TICKET
-@client.tree.command(name="configurar_apelaciones", description="Personaliza los embeds del sistema de apelaciones y tickets")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(
-    titulo="Título del embed principal",
-    descripcion="Descripción del embed principal",
-    color="Color en HEX (ej: #3498db)",
-    autor="Texto del autor (opcional)",
-    thumbnail="URL de la imagen pequeña/thumbnail (opcional)",
-    imagen="URL de la imagen grande central (opcional)",
-    footer="Texto del pie de página (opcional)",
-    ticket_titulo="Título del embed que llega al canal del ticket",
-    ticket_descripcion="Descripción del ticket (Usa {usuario} y {razon})"
-)
-async def configurar_apelaciones(
-    interaction: discord.Interaction,
-    titulo: str = None,
-    descripcion: str = None,
-    color: str = None,
-    autor: str = None,
-    thumbnail: str = None,
-    imagen: str = None,
-    footer: str = None,
-    ticket_titulo: str = None,
-    ticket_descripcion: str = None
-):
-    if titulo: config_apelacion_embed["titulo"] = titulo
-    if descripcion: config_apelacion_embed["descripcion"] = descripcion
-    if color:
-        try: config_apelacion_embed["color"] = int(color.replace("#", ""), 16)
+@bot.command(name="configurar_apelaciones")
+@commands.has_permissions(administrator=True)
+async def configurar_apelaciones(ctx, tipo: str, *, valor: str):
+    tipo = tipo.lower()
+    if tipo == "titulo":
+        config_apelacion_embed["titulo"] = valor
+    elif tipo == "descripcion":
+        config_apelacion_embed["descripcion"] = valor
+    elif tipo == "color":
+        try: config_apelacion_embed["color"] = int(valor.replace("#", ""), 16)
         except: pass
-    if autor is not None: config_apelacion_embed["autor"] = autor if autor.lower() != "none" else None
-    if thumbnail is not None: config_apelacion_embed["thumbnail"] = thumbnail if thumbnail.lower() != "none" else None
-    if imagen is not None: config_apelacion_embed["image"] = imagen if imagen.lower() != "none" else None
-    if footer is not None: config_apelacion_embed["footer"] = footer if footer.lower() != "none" else None
-    if ticket_titulo: config_apelacion_embed["ticket_titulo"] = ticket_titulo
-    if ticket_descripcion: config_apelacion_embed["ticket_descripcion"] = ticket_descripcion
+    elif tipo == "autor":
+        config_apelacion_embed["autor"] = None if valor.lower() == "none" else valor
+    elif tipo == "thumbnail":
+        config_apelacion_embed["thumbnail"] = None if valor.lower() == "none" else valor
+    elif tipo == "imagen":
+        config_apelacion_embed["image"] = None if valor.lower() == "none" else valor
+    elif tipo == "footer":
+        config_apelacion_embed["footer"] = None if valor.lower() == "none" else valor
+    elif tipo == "ticket_titulo":
+        config_apelacion_embed["ticket_titulo"] = valor
+    elif tipo == "ticket_descripcion":
+        config_apelacion_embed["ticket_descripcion"] = valor
+    else:
+        await ctx.send("❌ Propiedad no válida. Usa: `titulo`, `descripcion`, `color`, `autor`, `thumbnail`, `imagen`, `footer`, `ticket_titulo`, `ticket_descripcion`")
+        return
 
-    await interaction.response.send_message("✅ ¡Configuración de apelaciones y tickets actualizada con éxito! Usa `/panel_apelaciones` para ver los cambios.", ephemeral=True)
+    await ctx.send(f"✅ ¡Configuración de `{tipo}` actualizada con éxito!")
 
-# Comando: Ver apelaciones pendientes (Solo Alto Mando)
-@client.tree.command(name="apelaciones_pendientes", description="Muestra la lista de apelaciones pendientes")
-async def apelaciones_pendientes(interaction: discord.Interaction):
-    tiene_rol = any(role.id == ROL_ALTO_MANDO for role in interaction.user.roles)
-    if not tiene_rol and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ No tienes permisos para usar este comando (requiere el rol de Alto Mando).", ephemeral=True)
+@bot.command(name="apelaciones_pendientes")
+async def apelaciones_pendientes(ctx):
+    tiene_rol = any(role.id == ROL_ALTO_MANDO for role in ctx.author.roles)
+    if not tiene_rol and not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ No tienes permisos para usar este comando (requiere el rol de Alto Mando).")
         return
 
     if not apelaciones_db:
-        await interaction.response.send_message("📂 No hay apelaciones pendientes registradas.", ephemeral=True)
+        await ctx.send("📂 No hay apelaciones pendientes registradas.")
         return
 
     embed = discord.Embed(title="📋 Apelaciones Pendientes", color=discord.Color.yellow())
@@ -232,6 +200,6 @@ async def apelaciones_pendientes(interaction: discord.Interaction):
             inline=False
         )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await ctx.send(embed=embed)
 
-client.run(os.environ['DISCORD_TOKEN'])
+bot.run(os.environ['DISCORD_TOKEN'])
