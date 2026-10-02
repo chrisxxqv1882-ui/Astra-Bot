@@ -4,6 +4,7 @@ import os
 
 # Configuración inicial global editable
 config_global = {
+    "admin_rol_id": None, # Rol requerido para usar los comandos del bot (si es None, solo administradores de Discord)
     "rol_id": 1549479823200747521,
     "categoria_id": None,
     "titulo": "⚖️ Sistema de Apelaciones",
@@ -33,6 +34,16 @@ client = Bot()
 @client.event
 async def on_ready():
     print(f'¡Bot conectado con éxito como {client.user}!')
+
+# Función para verificar si el usuario tiene permisos (Administrador o el Rol Configurado)
+def verificar_permisos(interaction: discord.Interaction) -> bool:
+    if interaction.user.guild_permissions.administrator:
+        return True
+    if config_global["admin_rol_id"]:
+        rol = interaction.guild.get_role(config_global["admin_rol_id"])
+        if rol and rol in interaction.user.roles:
+            return True
+    return False
 
 # --- MODALES PARA EDITAR CADA PARTE DEL EMBED VISUALMENTE ---
 
@@ -78,7 +89,7 @@ class VistaEditorVisual(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✏️️ Título", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="✏ Título", style=discord.ButtonStyle.primary, row=0)
     async def btn_titulo(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModalEditarTexto("titulo"))
 
@@ -116,7 +127,6 @@ class VistaEditorVisual(discord.ui.View):
 
     @discord.ui.button(label="🚀 Publicar Panel", style=discord.ButtonStyle.success, row=2)
     async def btn_publicar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Generar el embed final para publicar
         embed = discord.Embed(
             title=config_global["titulo"],
             description=config_global["descripcion"],
@@ -130,7 +140,6 @@ class VistaEditorVisual(discord.ui.View):
         await interaction.channel.send(embed=embed, view=VistaApelacionBotonesPublico())
         await interaction.response.send_message("✅ ¡Panel de apelaciones publicado oficialmente en este canal!", ephemeral=True)
 
-# Botón público para que los usuarios abran el formulario de apelación
 class VistaApelacionBotonesPublico(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -174,9 +183,12 @@ class ApelacionModal(discord.ui.Modal, title="Formulario de Apelación"):
 
 # --- COMANDOS PRINCIPALES ---
 
-@client.tree.command(name="configurar", description="Abre el panel visual e interactivo para diseñar el embed de apelaciones")
-@app_commands.checks.has_permissions(administrator=True)
+@client.tree.command(name="configurar", description="Abre el panel visual interactivo para diseñar el embed de apelaciones")
 async def configurar(interaction: discord.Interaction):
+    if not verificar_permisos(interaction):
+        await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+        return
+
     embed_preview = discord.Embed(
         title=config_global["titulo"],
         description=config_global["descripcion"],
@@ -194,19 +206,35 @@ async def configurar(interaction: discord.Interaction):
         ephemeral=True
     )
 
-@client.tree.command(name="configurar_sistema", description="Define el rol del staff y la categoría de los canales de ticket")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(rol="Rol del staff que atenderá", categoria_id="ID de la categoría de Discord")
-async def configurar_sistema(interaction: discord.Interaction, rol: discord.Role, categoria_id: str):
-    config_global["rol_id"] = rol.id
-    config_global["categoria_id"] = categoria_id
-    await interaction.response.send_message(f"✅ Sistema configurado: Rol {rol.mention} y Categoría ID `{categoria_id}`.", ephemeral=True)
+@client.tree.command(name="configurar_sistema", description="Define el rol autorizado para comandos, rol del staff y categoría de tickets")
+@app_commands.describe(
+    rol_comandos="Rol que podrá usar los comandos del bot",
+    rol_staff="Rol del staff que atenderá las apelaciones",
+    categoria_id="ID de la categoría de Discord para los canales"
+)
+async def configurar_sistema(interaction: discord.Interaction, rol_comandos: discord.Role = None, rol_staff: discord.Role = None, categoria_id: str = None):
+    if not verificar_permisos(interaction):
+        await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+        return
+
+    texto_resp = "✅ **Configuración actualizada:**\n"
+    if rol_comandos:
+        config_global["admin_rol_id"] = rol_comandos.id
+        texto_resp += f"- Rol autorizado para comandos: {rol_comandos.mention}\n"
+    if rol_staff:
+        config_global["rol_id"] = rol_staff.id
+        texto_resp += f"- Rol del staff para tickets: {rol_staff.mention}\n"
+    if categoria_id:
+        config_global["categoria_id"] = categoria_id
+        texto_resp += f"- ID de categoría: `{categoria_id}`\n"
+
+    await interaction.response.send_message(texto_resp, ephemeral=True)
 
 
 @client.tree.command(name="apelaciones_pendientes", description="Muestra la lista de apelaciones registradas")
 async def apelaciones_pendientes(interaction: discord.Interaction):
     tiene_rol = any(role.id == config_global["rol_id"] for role in interaction.user.roles)
-    if not tiene_rol and not interaction.user.guild_permissions.administrator:
+    if not tiene_rol and not verificar_permisos(interaction):
         await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
         return
     if not apelaciones_db:
