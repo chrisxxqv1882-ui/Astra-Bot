@@ -23,7 +23,7 @@ EMOJI_ERR = "<a:emoji_40:1560034417643360388>"
 # pon la variable DATA_FILE=/data/astral_data.json para no perder nada al redeployar.
 DATA_FILE = os.environ.get("DATA_FILE", "astral_data.json")
 
-COMANDOS_VERSION = 1          # súbelo (2, 3...) si algún día cambias comandos y quieres que se resincronicen
+COMANDOS_VERSION = 2          # súbelo (2, 3...) si algún día cambias comandos y quieres que se resincronicen
 AUTO_INTERVALO_MIN = 20       # cada cuántos minutos el Auto Alianza busca pareja
 AUTO_COOLDOWN_HORAS = 6       # horas mínimas entre una auto alianza y la siguiente de un mismo servidor
 SOLICITUD_EXPIRA_DIAS = 7     # días que una solicitud queda pendiente
@@ -84,19 +84,11 @@ def guardar_datos():
 def embed_por_defecto(tipo: str) -> dict:
     if tipo == "alianza":
         titulo = "🤝 ¡Nueva Alianza!"
-        desc = ("Hemos formado una alianza con **{servidor_aliado}**\n\n"
-                "👥 **Miembros:** {miembros_aliado}\n"
-                "🔗 **Enlace:** {invitacion_aliado}\n\n"
-                "👮 **Hecha por:** {staff}")
     else:
         titulo = "🔗 ¡Nueva Afiliación!"
-        desc = ("Nos hemos afiliado con **{servidor_aliado}**\n\n"
-                "👥 **Miembros:** {miembros_aliado}\n"
-                "🔗 **Enlace:** {invitacion_aliado}\n\n"
-                "👮 **Hecha por:** {staff}")
     return {
         "titulo": titulo,
-        "descripcion": desc,
+        "descripcion": "{plantilla_aliado}\n\n👮 **Hecha por:** {staff}",
         "color": 0x5865F2,
         "imagen": None,
         "thumbnail": "{icono_aliado}",
@@ -112,6 +104,8 @@ def gdata(gid) -> dict:
         datos["guilds"][k] = {}
     d = datos["guilds"][k]
     d.setdefault("plantilla", None)
+    d.setdefault("invitacion", None)
+    d.setdefault("rol_staff", None)
     d.setdefault("cmd_ver", 0)
     d.setdefault("canal_alianzas", None)
     d.setdefault("canal_afiliaciones", None)
@@ -235,6 +229,27 @@ async def permitido(interaction: discord.Interaction) -> bool:
     return True
 
 
+def es_staff(interaction: discord.Interaction) -> bool:
+    if es_admin(interaction):
+        return True
+    rid = gdata(interaction.guild_id).get("rol_staff")
+    return bool(rid) and any(r.id == rid for r in interaction.user.roles)
+
+
+async def permitido_staff(interaction: discord.Interaction) -> bool:
+    """Staff (rol configurado) o Administración + plantilla guardada."""
+    if interaction.guild is None or not es_staff(interaction):
+        await interaction.response.send_message(
+            f"{EMOJI_ERR} Solo el **staff** (rol configurado con `/alianzas_config`) o alguien con permiso de **Administración** puede usar esto.",
+            ephemeral=True)
+        return False
+    if not gdata(interaction.guild_id).get("plantilla"):
+        await interaction.response.send_message(
+            f"{EMOJI_ERR} Primero se debe guardar la plantilla del servidor con `/plantilla`.", ephemeral=True)
+        return False
+    return True
+
+
 def canal_valido(guild: discord.Guild, canal_id) -> Optional[discord.TextChannel]:
     """Devuelve el canal solo si existe y el bot puede escribir embeds ahí."""
     if not canal_id:
@@ -250,9 +265,7 @@ def canal_valido(guild: discord.Guild, canal_id) -> Optional[discord.TextChannel
 def aplicar(texto, vars: dict) -> str:
     if not texto:
         return ""
-    for k, v in vars.items():
-        texto = texto.replace("{" + k + "}", str(v))
-    return texto
+    return re.sub(r"\{(\w+)\}", lambda m: str(vars.get(m.group(1), m.group(0))), texto)
 
 
 def construir_embed(cfg: dict, vars: dict) -> discord.Embed:
@@ -275,20 +288,40 @@ def construir_embed(cfg: dict, vars: dict) -> discord.Embed:
     return e
 
 
-def construir_vars(g_local: discord.Guild, g_aliado: discord.Guild, staff: str, tipo: str) -> dict:
+def info_guild(g: discord.Guild) -> dict:
+    """Datos de un servidor (donde está el bot) para usar como 'aliado'."""
+    d = gdata(g.id)
+    return {
+        "id": g.id,
+        "nombre": g.name,
+        "miembros": g.member_count or 0,
+        "invitacion": d.get("invitacion") or d.get("plantilla") or "",
+        "icono": g.icon.url if g.icon else "",
+        "plantilla": d.get("plantilla") or "",
+        "representante": f"<@{g.owner_id}>",
+    }
+
+
+def construir_vars(g_local: discord.Guild, info: dict, staff: str, tipo: str, uid=None, staff_nombre: str = "") -> dict:
     dl = gdata(g_local.id)
-    da = gdata(g_aliado.id)
+    s = dl["stats"].get(str(uid), {}) if uid else {}
     return {
         "servidor": g_local.name,
         "miembros": g_local.member_count or 0,
-        "invitacion": dl.get("plantilla") or "",
+        "invitacion": dl.get("invitacion") or dl.get("plantilla") or "",
+        "plantilla": dl.get("plantilla") or "",
         "icono": g_local.icon.url if g_local.icon else "",
-        "servidor_aliado": g_aliado.name,
-        "miembros_aliado": g_aliado.member_count or 0,
-        "invitacion_aliado": da.get("plantilla") or "",
-        "icono_aliado": g_aliado.icon.url if g_aliado.icon else "",
-        "dueno_aliado": f"<@{g_aliado.owner_id}>",
+        "servidor_aliado": info["nombre"],
+        "miembros_aliado": info["miembros"],
+        "invitacion_aliado": info["invitacion"],
+        "plantilla_aliado": info["plantilla"],
+        "icono_aliado": info["icono"],
+        "dueno_aliado": info["representante"],
+        "representante": info["representante"],
         "staff": staff,
+        "staff_nombre": staff_nombre or "Staff",
+        "alianzas_staff": s.get("alianzas", 0),
+        "afiliaciones_staff": s.get("afiliaciones", 0),
         "fecha": datetime.now().strftime("%d/%m/%Y"),
         "alianzas": sum(1 for h in dl["historial"] if h["tipo"] == "alianza"),
         "afiliaciones": sum(1 for h in dl["historial"] if h["tipo"] == "afiliacion"),
@@ -297,39 +330,37 @@ def construir_vars(g_local: discord.Guild, g_aliado: discord.Guild, staff: str, 
 
 
 def vars_ejemplo(guild: discord.Guild, user: discord.abc.User) -> dict:
-    dl = gdata(guild.id)
-    return {
-        "servidor": guild.name,
-        "miembros": guild.member_count or 0,
-        "invitacion": dl.get("plantilla") or "https://discord.gg/ejemplo",
+    info = {
+        "id": 0,
+        "nombre": "Servidor de Ejemplo",
+        "miembros": 1234,
+        "invitacion": "https://discord.gg/ejemplo",
         "icono": guild.icon.url if guild.icon else "",
-        "servidor_aliado": "Servidor de Ejemplo",
-        "miembros_aliado": 1234,
-        "invitacion_aliado": "https://discord.gg/ejemplo",
-        "icono_aliado": guild.icon.url if guild.icon else "",
-        "dueno_aliado": user.mention,
-        "staff": user.mention,
-        "fecha": datetime.now().strftime("%d/%m/%Y"),
-        "alianzas": sum(1 for h in dl["historial"] if h["tipo"] == "alianza"),
-        "afiliaciones": sum(1 for h in dl["historial"] if h["tipo"] == "afiliacion"),
-        "tipo": "Alianza",
+        "plantilla": gdata(guild.id).get("plantilla") or "(Aquí aparecerá la plantilla del servidor aliado)",
+        "representante": user.mention,
     }
+    return construir_vars(guild, info, user.mention, "alianza", user.id, user.display_name)
 
 
 VARIABLES_DOC = [
     ("{servidor}", "Nombre de tu servidor"),
     ("{miembros}", "Cantidad de miembros de tu servidor"),
-    ("{invitacion}", "Enlace que guardaste con /plantilla"),
+    ("{plantilla}", "La plantilla (texto) de tu servidor guardada con /plantilla"),
+    ("{invitacion}", "El enlace de invitación que está dentro de tu plantilla"),
     ("{icono}", "URL del icono de tu servidor (para Thumbnail o Imagen)"),
     ("{servidor_aliado}", "Nombre del servidor aliado/afiliado"),
     ("{miembros_aliado}", "Miembros del servidor aliado"),
-    ("{invitacion_aliado}", "Enlace del servidor aliado"),
+    ("{plantilla_aliado}", "La plantilla (texto) del servidor aliado"),
+    ("{invitacion_aliado}", "Enlace de invitación del servidor aliado"),
     ("{icono_aliado}", "URL del icono del aliado (para Thumbnail o Imagen)"),
-    ("{dueno_aliado}", "Mención del dueño del servidor aliado"),
-    ("{staff}", "Staff que hizo la alianza (o 🤖 Auto Alianza)"),
+    ("{representante}", "Representante del aliado (o su dueño si no se indicó)"),
+    ("{staff}", "Mención del staff que hizo la alianza (o 🤖 Auto Alianza)"),
+    ("{staff_nombre}", "Nombre del staff que hizo la alianza, sin mención"),
+    ("{alianzas_staff}", "Alianzas hechas por ese staff"),
+    ("{afiliaciones_staff}", "Afiliaciones hechas por ese staff"),
+    ("{alianzas}", "Total de alianzas del servidor"),
+    ("{afiliaciones}", "Total de afiliaciones del servidor"),
     ("{fecha}", "Fecha de hoy (dd/mm/aaaa)"),
-    ("{alianzas}", "Total de alianzas hechas por tu servidor"),
-    ("{afiliaciones}", "Total de afiliaciones hechas por tu servidor"),
     ("{tipo}", "Alianza o Afiliación"),
 ]
 
@@ -359,15 +390,24 @@ def registrar_union(tipo: str, g_a: discord.Guild, g_b: discord.Guild, uid_a=Non
     guardar_datos()
 
 
-async def publicar_embed(tipo: str, g_local: discord.Guild, g_aliado: discord.Guild, staff: str,
-                         canal: Optional[discord.TextChannel] = None, ping: str = "") -> bool:
+def registrar_individual(tipo: str, g: discord.Guild, info: dict, uid: int):
+    d = gdata(g.id)
+    d["historial"].append({"tipo": tipo, "aliado_id": info["id"], "aliado_nombre": info["nombre"],
+                           "fecha": datetime.now().isoformat(), "auto": False, "individual": True, "staff": uid})
+    sumar_stat(d, uid, tipo, 1)
+    guardar_datos()
+
+
+async def publicar_embed(tipo: str, g_local: discord.Guild, info: dict, staff: str,
+                         canal: Optional[discord.TextChannel] = None, ping: str = "",
+                         uid=None, staff_nombre: str = "") -> bool:
     d = gdata(g_local.id)
     if canal is None:
         canal = canal_valido(g_local, d["canal_alianzas"] if tipo == "alianza" else d["canal_afiliaciones"])
     if canal is None:
         return False
     cfg = d["embeds"][tipo]
-    vars = construir_vars(g_local, g_aliado, staff, tipo)
+    vars = construir_vars(g_local, info, staff, tipo, uid, staff_nombre)
     contenido = "\n".join(p for p in (ping, aplicar(cfg.get("mensaje"), vars)) if p).strip()[:2000] or None
     try:
         await canal.send(
@@ -383,54 +423,74 @@ async def publicar_embed(tipo: str, g_local: discord.Guild, g_aliado: discord.Gu
 # ==========================================================
 #  /plantilla  (ÚNICO comando al inicio)
 # ==========================================================
-RE_PLANTILLA = re.compile(r"(?:discord\.new/|discord(?:app)?\.com/template/)([\w-]+)", re.I)
+RE_INVITE = re.compile(r"(?:discord\.gg|discord(?:app)?\.com/invite)/([\w-]+)", re.I)
+
+
+def extraer_invitacion(texto: str) -> Optional[str]:
+    m = RE_INVITE.search(texto or "")
+    return m.group(1) if m else None
+
+
+class ModalPlantilla(discord.ui.Modal, title="Plantilla de tu servidor"):
+    def __init__(self, actual: str = ""):
+        super().__init__()
+        self.texto = discord.ui.TextInput(
+            label="Pega aquí la plantilla de tu servidor",
+            style=discord.TextStyle.paragraph,
+            placeholder="Debe incluir el enlace de invitación de tu servidor",
+            default=(actual or "")[:4000] or None,
+            required=True,
+            max_length=4000)
+        self.add_item(self.texto)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        texto = self.texto.value.strip()
+        code = extraer_invitacion(texto)
+        valido = False
+        aviso = ""
+        if code:
+            try:
+                inv = await client.fetch_invite(code)
+                valido = inv.guild is not None and inv.guild.id == interaction.guild_id
+                if valido and inv.expires_at is not None:
+                    aviso = "\n⚠️ El enlace de tu plantilla expira. Te recomiendo usar uno **permanente** para que tus aliados siempre puedan entrar."
+            except Exception:
+                valido = False
+
+        if not valido:
+            await interaction.followup.send(
+                f"{EMOJI_ERR} Su plantilla no ha sido guardada, por favor coloque un enlace de invitación valido\n"
+                f"*(La plantilla debe incluir un enlace de invitación vigente de este mismo servidor)*",
+                ephemeral=True)
+            return
+
+        d = gdata(interaction.guild_id)
+        d["plantilla"] = texto
+        d["invitacion"] = f"https://discord.gg/{code}"
+        guardar_datos()
+        registrar_comandos(interaction.guild)
+        try:
+            await client.tree.sync(guild=discord.Object(id=interaction.guild_id))
+            d["cmd_ver"] = COMANDOS_VERSION
+            guardar_datos()
+        except Exception as e:
+            print(f"Error sincronizando comandos: {e}")
+        await interaction.followup.send(
+            f"{EMOJI_OK} Su plantilla ha sido guardada con éxito{aviso}\n"
+            f"Ya puedes usar `/embed alianza`, `/embed afiliacion`, `/leaderboard`, `/variables`, "
+            f"`/alianzas_config`, `/hacer`, `/solicitar`, `/autoalianza` y `/blacklist`.\n"
+            f"*(Si no los ves aún, reinicia Discord con Ctrl+R)*",
+            ephemeral=True)
 
 
 @client.tree.command(name="plantilla", description="Guarda la plantilla de tu servidor y desbloquea los comandos del bot")
-@app_commands.describe(enlace="Enlace de plantilla o de invitación de tu servidor")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
-async def plantilla(interaction: discord.Interaction, enlace: str):
+async def plantilla(interaction: discord.Interaction):
     if not await solo_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
-    enlace = enlace.strip()
-    valido = False
-    aviso = ""
-    try:
-        if RE_PLANTILLA.search(enlace):
-            await client.fetch_template(enlace)
-            valido = True
-        else:
-            inv = await client.fetch_invite(enlace)
-            valido = inv.guild is not None and inv.guild.id == interaction.guild_id
-            if valido and inv.expires_at is not None:
-                aviso = "\n⚠️ Este enlace expira. Te recomiendo usar uno **permanente** para que tus aliados siempre puedan entrar."
-    except Exception:
-        valido = False
-
-    if not valido:
-        await interaction.followup.send(
-            f"{EMOJI_ERR} Su plantilla no ha sido guardada, por favor coloque un enlace de invitación valido",
-            ephemeral=True)
-        return
-
-    d = gdata(interaction.guild_id)
-    d["plantilla"] = enlace
-    guardar_datos()
-    registrar_comandos(interaction.guild)
-    try:
-        await client.tree.sync(guild=discord.Object(id=interaction.guild_id))
-        d["cmd_ver"] = COMANDOS_VERSION
-        guardar_datos()
-    except Exception as e:
-        print(f"Error sincronizando comandos: {e}")
-    await interaction.followup.send(
-        f"{EMOJI_OK} Su plantilla ha sido guardada con éxito{aviso}\n"
-        f"Ya puedes usar `/embed alianza`, `/embed afiliacion`, `/leaderboard`, `/variables`, "
-        f"`/alianzas_config`, `/solicitar`, `/autoalianza` y `/blacklist`.\n"
-        f"*(Si no los ves aún, reinicia Discord con Ctrl+R)*",
-        ephemeral=True)
+    await interaction.response.send_modal(ModalPlantilla(gdata(interaction.guild_id).get("plantilla") or ""))
 
 
 # ==========================================================
@@ -833,14 +893,16 @@ async def variables(interaction: discord.Interaction):
     canal_alianzas="Canal donde se publicarán las alianzas",
     canal_afiliaciones="Canal donde se publicarán las afiliaciones",
     canal_solicitudes="Canal donde llegan las solicitudes de otros servidores",
-    minimo_miembros="Mínimo de miembros que debe tener un servidor para aliarse contigo (0 = sin mínimo)")
+    minimo_miembros="Mínimo de miembros que debe tener un servidor para aliarse contigo (0 = sin mínimo)",
+    rol_staff="Rol de staff que puede usar /hacer y /solicitar")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 async def alianzas_config(interaction: discord.Interaction,
                           canal_alianzas: Optional[discord.TextChannel] = None,
                           canal_afiliaciones: Optional[discord.TextChannel] = None,
                           canal_solicitudes: Optional[discord.TextChannel] = None,
-                          minimo_miembros: Optional[app_commands.Range[int, 0, 10000000]] = None):
+                          minimo_miembros: Optional[app_commands.Range[int, 0, 10000000]] = None,
+                          rol_staff: Optional[discord.Role] = None):
     if not await permitido(interaction):
         return
     d = gdata(interaction.guild_id)
@@ -853,17 +915,21 @@ async def alianzas_config(interaction: discord.Interaction,
                 avisos.append(f"⚠️ No tengo permisos para enviar embeds en {canal.mention}.")
     if minimo_miembros is not None:
         d["min_miembros"] = minimo_miembros
+    if rol_staff:
+        d["rol_staff"] = rol_staff.id
     guardar_datos()
 
     def c(cid):
         return f"<#{cid}>" if cid else "*Sin configurar*"
 
     minimo = d["min_miembros"]
+    rol_txt = "<@&" + str(d["rol_staff"]) + ">" if d.get("rol_staff") else "*Solo Administración*"
     texto = (f"{EMOJI_OK} **Configuración actual**\n"
              f"• Canal de alianzas: {c(d['canal_alianzas'])}\n"
              f"• Canal de afiliaciones: {c(d['canal_afiliaciones'])}\n"
              f"• Canal de solicitudes: {c(d['canal_solicitudes'])}\n"
-             f"• Mínimo de miembros: **{minimo if minimo else 'Sin mínimo'}**")
+             f"• Mínimo de miembros: **{minimo if minimo else 'Sin mínimo'}**\n"
+             f"• Rol de staff: {rol_txt}")
     if avisos:
         texto += "\n" + "\n".join(avisos)
     await interaction.response.send_message(texto, ephemeral=True)
@@ -986,7 +1052,7 @@ async def bl_ver(interaction: discord.Interaction):
 #  /solicitar alianza  y  /solicitar afiliacion
 # ==========================================================
 solicitar_group = app_commands.Group(name="solicitar", description="Solicita alianzas o afiliaciones a otros servidores",
-                                     guild_only=True, default_permissions=discord.Permissions(administrator=True))
+                                     guild_only=True)
 
 
 async def ac_servidores(interaction: discord.Interaction, current: str):
@@ -1028,7 +1094,7 @@ def validar_solicitud(tipo: str, g_origen: discord.Guild, g_destino: discord.Gui
 
 
 async def procesar_solicitud(interaction: discord.Interaction, tipo: str, servidor: str):
-    if not await permitido(interaction):
+    if not await permitido_staff(interaction):
         return
     nombre = "alianza" if tipo == "alianza" else "afiliación"
     if not servidor.isdigit() or client.get_guild(int(servidor)) is None:
@@ -1062,7 +1128,7 @@ async def procesar_solicitud(interaction: discord.Interaction, tipo: str, servid
         title=f"📨 Solicitud de {nombre}",
         description=(f"El servidor **{origen.name}** quiere una {nombre} con ustedes.\n\n"
                      f"👥 **Miembros:** {origen.member_count}\n"
-                     f"🔗 **Enlace:** {do.get('plantilla')}\n"
+                     f"🔗 **Enlace:** {do.get('invitacion') or do.get('plantilla')}\n"
                      f"👮 **Solicitada por:** {interaction.user.mention}"),
         color=0x5865F2)
     if origen.icon:
@@ -1169,8 +1235,11 @@ async def manejar_boton_solicitud(interaction: discord.Interaction, cid: str):
 
     sol["estado"] = "aceptada"
     registrar_union(tipo, origen, destino, uid_a=sol["usuario"], uid_b=interaction.user.id)
-    ok_destino = await publicar_embed(tipo, destino, origen, interaction.user.mention)
-    ok_origen = await publicar_embed(tipo, origen, destino, f"<@{sol['usuario']}>")
+    u_sol = client.get_user(sol["usuario"])
+    ok_destino = await publicar_embed(tipo, destino, info_guild(origen), interaction.user.mention,
+                                      uid=interaction.user.id, staff_nombre=interaction.user.display_name)
+    ok_origen = await publicar_embed(tipo, origen, info_guild(destino), f"<@{sol['usuario']}>",
+                                     uid=sol["usuario"], staff_nombre=u_sol.display_name if u_sol else "Staff")
 
     emb.color = 0x2ECC71
     emb.set_footer(text=f"✅ Aceptada por {interaction.user}")
@@ -1193,6 +1262,117 @@ async def on_interaction(interaction: discord.Interaction):
         cid = (interaction.data or {}).get("custom_id", "")
         if cid.startswith("sol|"):
             await manejar_boton_solicitud(interaction, cid)
+
+
+# ==========================================================
+#  /hacer alianza  y  /hacer afiliacion  (hechas por un staff, de forma individual)
+# ==========================================================
+hacer_group = app_commands.Group(name="hacer", description="Registra una alianza o afiliación hecha por ti",
+                                 guild_only=True)
+
+
+class ModalHacer(discord.ui.Modal, title="Plantilla del servidor aliado"):
+    def __init__(self, tipo: str, representante_id: Optional[int] = None):
+        super().__init__()
+        self.tipo = tipo
+        self.representante_id = representante_id
+        self.texto = discord.ui.TextInput(
+            label="Pega la plantilla del otro servidor",
+            style=discord.TextStyle.paragraph,
+            placeholder="Debe incluir su enlace de invitación",
+            required=True,
+            max_length=4000)
+        self.add_item(self.texto)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        tipo = self.tipo
+        nombre = "alianza" if tipo == "alianza" else "afiliación"
+        g = interaction.guild
+        d = gdata(g.id)
+        texto = self.texto.value.strip()
+
+        code = extraer_invitacion(texto)
+        if not code:
+            await interaction.followup.send(
+                f"{EMOJI_ERR} La {nombre} no ha podido ser registrada, Motivo: la plantilla no tiene un enlace de invitación")
+            return
+        try:
+            inv = await client.fetch_invite(code)
+        except Exception:
+            inv = None
+        if inv is None or inv.guild is None:
+            await interaction.followup.send(
+                f"{EMOJI_ERR} La {nombre} no ha podido ser registrada, Motivo: el enlace de invitación expiró o no es válido")
+            return
+
+        ag = inv.guild
+        miembros = inv.approximate_member_count
+
+        def fallo(motivo: str) -> str:
+            return f"{EMOJI_ERR} La {nombre} con el servidor **{ag.name}** no ha podido ser registrada, Motivo: {motivo}"
+
+        if ag.id == g.id:
+            await interaction.followup.send(fallo("No puedes hacer una " + nombre + " con tu propio servidor"))
+            return
+        otro = client.get_guild(ag.id)
+        if str(ag.id) in d["blacklist"] or (otro and str(g.id) in gdata(otro.id)["blacklist"]):
+            await interaction.followup.send(fallo("Black List"))
+            return
+        minimo = d.get("min_miembros", 0)
+        if minimo and miembros is not None and miembros < minimo:
+            await interaction.followup.send(
+                f"{EMOJI_ERR} Este servidor no cumple con el mínimo de miembros (mínimo: {minimo}).")
+            return
+        if ya_existe(tipo, g.id, ag.id):
+            await interaction.followup.send(fallo(f"Ya tienen una {nombre} con ese servidor"))
+            return
+        clave = "canal_alianzas" if tipo == "alianza" else "canal_afiliaciones"
+        if canal_valido(g, d.get(clave)) is None:
+            await interaction.followup.send(
+                fallo("No hay un canal configurado o no puedo escribir en él (usa `/alianzas_config`)"))
+            return
+
+        if self.representante_id:
+            rep = f"<@{self.representante_id}>"
+        elif inv.inviter:
+            rep = inv.inviter.mention
+        else:
+            rep = "No indicado"
+        info = {
+            "id": ag.id,
+            "nombre": ag.name,
+            "miembros": miembros if miembros is not None else "?",
+            "invitacion": f"https://discord.gg/{code}",
+            "icono": ag.icon.url if ag.icon else "",
+            "plantilla": texto,
+            "representante": rep,
+        }
+        registrar_individual(tipo, g, info, interaction.user.id)
+        ok = await publicar_embed(tipo, g, info, interaction.user.mention,
+                                  uid=interaction.user.id, staff_nombre=interaction.user.display_name)
+        if ok:
+            await interaction.followup.send(
+                f"{EMOJI_OK} La {nombre} con el servidor **{ag.name}** ha sido registrada con éxito")
+        else:
+            await interaction.followup.send(
+                f"{EMOJI_OK} La {nombre} con el servidor **{ag.name}** fue registrada, pero no pude publicarla: revisa mis permisos en el canal.")
+
+
+@hacer_group.command(name="alianza", description="Registra una alianza hecha por ti con otro servidor")
+@app_commands.describe(representante="OPCIONAL: representante del otro servidor")
+async def hacer_alianza(interaction: discord.Interaction, representante: Optional[discord.User] = None):
+    if not await permitido_staff(interaction):
+        return
+    await interaction.response.send_modal(ModalHacer("alianza", representante.id if representante else None))
+
+
+@hacer_group.command(name="afiliacion", description="Registra una afiliación hecha por ti con otro servidor")
+@app_commands.describe(representante="OPCIONAL: representante del otro servidor")
+async def hacer_afiliacion(interaction: discord.Interaction, representante: Optional[discord.User] = None):
+    if not await permitido_staff(interaction):
+        return
+    await interaction.response.send_modal(ModalHacer("afiliacion", representante.id if representante else None))
 
 
 # ==========================================================
@@ -1248,7 +1428,7 @@ async def ejecutar_auto():
             guardar_datos()
             for local, otro in ((g, h), (h, g)):
                 a = gdata(local.id)["auto"]
-                await publicar_embed("alianza", local, otro, "🤖 Auto Alianza",
+                await publicar_embed("alianza", local, info_guild(otro), "🤖 Auto Alianza",
                                      canal=canal_valido(local, a.get("canal")), ping=a.get("ping", ""))
             print(f"Auto alianza: {g.name} <-> {h.name}")
 
@@ -1328,7 +1508,7 @@ async def auto_estado(interaction: discord.Interaction):
 # ==========================================================
 COMANDOS_SERVIDOR = [
     embed_group, leaderboard, variables, alianzas_config, sumar,
-    solicitar_group, autoalianza_group, blacklist_group,
+    hacer_group, solicitar_group, autoalianza_group, blacklist_group,
     configurar, configurar_sistema, usuario, servidor, encuesta, dado,
 ]
 
