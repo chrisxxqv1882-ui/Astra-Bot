@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 
 # ==========================================================
-#  ASTRAL — Alianzas, Afiliaciones y Tickets
+#  ASTRAL — Bot de Alianzas y Afiliaciones
 # ==========================================================
 
 # ---------- AJUSTES RÁPIDOS ----------
@@ -23,31 +23,10 @@ EMOJI_ERR = "<a:emoji_40:1560034417643360388>"
 # pon la variable DATA_FILE=/data/astral_data.json para no perder nada al redeployar.
 DATA_FILE = os.environ.get("DATA_FILE", "astral_data.json")
 
-COMANDOS_VERSION = 2          # súbelo (2, 3...) si algún día cambias comandos y quieres que se resincronicen
+COMANDOS_VERSION = 3          # súbelo si algún día cambias comandos y quieres que se resincronicen
 AUTO_INTERVALO_MIN = 20       # cada cuántos minutos el Auto Alianza busca pareja
 AUTO_COOLDOWN_HORAS = 6       # horas mínimas entre una auto alianza y la siguiente de un mismo servidor
 SOLICITUD_EXPIRA_DIAS = 7     # días que una solicitud queda pendiente
-
-# ==========================================================
-#  CONFIGURACIÓN DEL SISTEMA DE TICKETS (original, sin tocar)
-# ==========================================================
-config_global = {
-    "admin_rol_id": None,
-    "rol_id": 1549479823200747521,
-    "categoria_id": None,
-    "titulo": "⚖️ Sistema de Apelaciones y Reclamaciones",
-    "descripcion": "Si necesitas abrir un ticket, reclamar o apelar una sanción, haz clic en el botón de abajo.",
-    "color": 0x3498db,
-    "autor": "Hakkuze - Moderación",
-    "thumbnail": None,
-    "image": None,
-    "footer": "Sistema seguro de tickets",
-    "ticket_embed_titulo": "📥 ¡Nuevo Ticket Abierto!",
-    "ticket_embed_descripcion": "El usuario {usuario} ha iniciado un caso.\n\n**Motivo / Razón:**\n{razon}",
-    "ticket_embed_footer": "Atiende con respeto y profesionalismo."
-}
-
-apelaciones_db = []
 
 # ==========================================================
 #  ALMACENAMIENTO (archivo JSON)
@@ -61,6 +40,10 @@ def cargar_datos():
             cargado = json.load(f)
         datos["guilds"] = cargado.get("guilds", {})
         datos["solicitudes"] = cargado.get("solicitudes", {})
+        # Limpieza: borra solicitudes ya respondidas con más de 30 días
+        limite = time.time() - 30 * 86400
+        datos["solicitudes"] = {k: v for k, v in datos["solicitudes"].items()
+                                if v.get("estado") == "pendiente" or v.get("ts", 0) > limite}
         print(f"Datos cargados desde {DATA_FILE}")
     except FileNotFoundError:
         print("No había datos guardados, empezando desde cero.")
@@ -84,11 +67,19 @@ def guardar_datos():
 def embed_por_defecto(tipo: str) -> dict:
     if tipo == "alianza":
         titulo = "🤝 ¡Nueva Alianza!"
+        desc = ("Alianza con **{servidor_aliado}**\n\n"
+                "👥 **Miembros:** {miembros_aliado}\n"
+                "👮 **Hecha por:** {staff}\n"
+                "🏆 **Posición en el ranked:** #{posicion}")
     else:
         titulo = "🔗 ¡Nueva Afiliación!"
+        desc = ("Afiliación con **{servidor_aliado}**\n\n"
+                "👥 **Miembros:** {miembros_aliado}\n"
+                "👮 **Hecha por:** {staff}\n"
+                "🏆 **Posición en el ranked:** #{posicion}")
     return {
         "titulo": titulo,
-        "descripcion": "{plantilla_aliado}\n\n👮 **Hecha por:** {staff}",
+        "descripcion": desc,
         "color": 0x5865F2,
         "imagen": None,
         "thumbnail": "{icono_aliado}",
@@ -103,8 +94,8 @@ def gdata(gid) -> dict:
     if k not in datos["guilds"]:
         datos["guilds"][k] = {}
     d = datos["guilds"][k]
-    d.setdefault("plantilla", None)
-    d.setdefault("invitacion", None)
+    d.setdefault("plantilla", None)       # texto de publicidad del servidor
+    d.setdefault("invitacion", None)      # enlace de invitación sacado de la plantilla
     d.setdefault("rol_staff", None)
     d.setdefault("cmd_ver", 0)
     d.setdefault("canal_alianzas", None)
@@ -119,6 +110,13 @@ def gdata(gid) -> dict:
     for t in ("alianza", "afiliacion"):
         if t not in d["embeds"]:
             d["embeds"][t] = embed_por_defecto(t)
+    # Migración: la plantilla ya NO va dentro del embed, se manda aparte como mensaje normal
+    if d.get("embeds_ver", 0) < 2:
+        for t in ("alianza", "afiliacion"):
+            desc = d["embeds"][t].get("descripcion") or ""
+            if desc.startswith("{plantilla_aliado}") or desc.startswith("Hemos formado") or desc.startswith("Nos hemos afiliado"):
+                d["embeds"][t] = embed_por_defecto(t)
+        d["embeds_ver"] = 2
     return d
 
 
@@ -131,9 +129,7 @@ class Bot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # Mantiene vivo el botón del panel de tickets aunque el bot se reinicie
-        self.add_view(VistaApelacionBotonesPublico())
-        # Comando global: SOLO /plantilla
+        # Comando global: SOLO /plantilla (el resto se desbloquea por servidor)
         await self.tree.sync()
         print("¡Slash commands sincronizados!")
 
@@ -192,21 +188,18 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
-def verificar_permisos(interaction: discord.Interaction) -> bool:
-    if interaction.user.guild_permissions.administrator:
-        return True
-    if config_global["admin_rol_id"]:
-        rol = interaction.guild.get_role(config_global["admin_rol_id"])
-        if rol and rol in interaction.user.roles:
-            return True
-    return False
-
-
 # ==========================================================
-#  UTILIDADES NUEVAS
+#  UTILIDADES
 # ==========================================================
 def es_admin(interaction: discord.Interaction) -> bool:
     return interaction.guild is not None and interaction.user.guild_permissions.administrator
+
+
+def es_staff(interaction: discord.Interaction) -> bool:
+    if es_admin(interaction):
+        return True
+    rid = gdata(interaction.guild_id).get("rol_staff")
+    return bool(rid) and any(r.id == rid for r in interaction.user.roles)
 
 
 async def solo_admin(interaction: discord.Interaction) -> bool:
@@ -219,7 +212,7 @@ async def solo_admin(interaction: discord.Interaction) -> bool:
 
 
 async def permitido(interaction: discord.Interaction) -> bool:
-    """Admin + plantilla guardada."""
+    """Administración + plantilla guardada."""
     if not await solo_admin(interaction):
         return False
     if not gdata(interaction.guild_id).get("plantilla"):
@@ -227,13 +220,6 @@ async def permitido(interaction: discord.Interaction) -> bool:
             f"{EMOJI_ERR} Primero debes guardar la plantilla de tu servidor con `/plantilla`.", ephemeral=True)
         return False
     return True
-
-
-def es_staff(interaction: discord.Interaction) -> bool:
-    if es_admin(interaction):
-        return True
-    rid = gdata(interaction.guild_id).get("rol_staff")
-    return bool(rid) and any(r.id == rid for r in interaction.user.roles)
 
 
 async def permitido_staff(interaction: discord.Interaction) -> bool:
@@ -288,14 +274,36 @@ def construir_embed(cfg: dict, vars: dict) -> discord.Embed:
     return e
 
 
+# ---------- RANKED ----------
+def posiciones(d: dict, uid):
+    """Posición (1, 2, 3...) de un staff en alianzas y en afiliaciones. '-' si aún no tiene."""
+    stats = d["stats"]
+    mine = stats.get(str(uid)) if uid else None
+
+    def pos(clave):
+        if not mine or mine.get(clave, 0) <= 0:
+            return "-"
+        v = mine[clave]
+        return 1 + sum(1 for x in stats.values() if x.get(clave, 0) > v)
+
+    return pos("alianzas"), pos("afiliaciones")
+
+
+def sumar_stat(d: dict, uid, tipo: str, n: int):
+    s = d["stats"].setdefault(str(uid), {"alianzas": 0, "afiliaciones": 0})
+    key = "alianzas" if tipo == "alianza" else "afiliaciones"
+    s[key] = max(0, s.get(key, 0) + n)
+
+
+# ---------- VARIABLES ----------
 def info_guild(g: discord.Guild) -> dict:
-    """Datos de un servidor (donde está el bot) para usar como 'aliado'."""
+    """Datos de un servidor donde está el bot, para usarlo como 'aliado'."""
     d = gdata(g.id)
     return {
         "id": g.id,
         "nombre": g.name,
         "miembros": g.member_count or 0,
-        "invitacion": d.get("invitacion") or d.get("plantilla") or "",
+        "invitacion": d.get("invitacion") or "",
         "icono": g.icon.url if g.icon else "",
         "plantilla": d.get("plantilla") or "",
         "representante": f"<@{g.owner_id}>",
@@ -305,10 +313,11 @@ def info_guild(g: discord.Guild) -> dict:
 def construir_vars(g_local: discord.Guild, info: dict, staff: str, tipo: str, uid=None, staff_nombre: str = "") -> dict:
     dl = gdata(g_local.id)
     s = dl["stats"].get(str(uid), {}) if uid else {}
+    pa, pf = posiciones(dl, uid)
     return {
         "servidor": g_local.name,
         "miembros": g_local.member_count or 0,
-        "invitacion": dl.get("invitacion") or dl.get("plantilla") or "",
+        "invitacion": dl.get("invitacion") or "",
         "plantilla": dl.get("plantilla") or "",
         "icono": g_local.icon.url if g_local.icon else "",
         "servidor_aliado": info["nombre"],
@@ -322,6 +331,9 @@ def construir_vars(g_local: discord.Guild, info: dict, staff: str, tipo: str, ui
         "staff_nombre": staff_nombre or "Staff",
         "alianzas_staff": s.get("alianzas", 0),
         "afiliaciones_staff": s.get("afiliaciones", 0),
+        "posicion": pa if tipo == "alianza" else pf,
+        "posicion_alianzas": pa,
+        "posicion_afiliaciones": pf,
         "fecha": datetime.now().strftime("%d/%m/%Y"),
         "alianzas": sum(1 for h in dl["historial"] if h["tipo"] == "alianza"),
         "afiliaciones": sum(1 for h in dl["historial"] if h["tipo"] == "afiliacion"),
@@ -336,28 +348,32 @@ def vars_ejemplo(guild: discord.Guild, user: discord.abc.User) -> dict:
         "miembros": 1234,
         "invitacion": "https://discord.gg/ejemplo",
         "icono": guild.icon.url if guild.icon else "",
-        "plantilla": gdata(guild.id).get("plantilla") or "(Aquí aparecerá la plantilla del servidor aliado)",
+        "plantilla": "(Aquí va la plantilla del servidor aliado)",
         "representante": user.mention,
     }
-    return construir_vars(guild, info, user.mention, "alianza", user.id, user.display_name)
+    v = construir_vars(guild, info, user.mention, "alianza", user.id, user.display_name)
+    if v["posicion"] == "-":
+        v["posicion"] = 1      # ejemplo para la vista previa
+    return v
 
 
 VARIABLES_DOC = [
     ("{servidor}", "Nombre de tu servidor"),
     ("{miembros}", "Cantidad de miembros de tu servidor"),
-    ("{plantilla}", "La plantilla (texto) de tu servidor guardada con /plantilla"),
     ("{invitacion}", "El enlace de invitación que está dentro de tu plantilla"),
     ("{icono}", "URL del icono de tu servidor (para Thumbnail o Imagen)"),
     ("{servidor_aliado}", "Nombre del servidor aliado/afiliado"),
     ("{miembros_aliado}", "Miembros del servidor aliado"),
-    ("{plantilla_aliado}", "La plantilla (texto) del servidor aliado"),
     ("{invitacion_aliado}", "Enlace de invitación del servidor aliado"),
     ("{icono_aliado}", "URL del icono del aliado (para Thumbnail o Imagen)"),
     ("{representante}", "Representante del aliado (o su dueño si no se indicó)"),
     ("{staff}", "Mención del staff que hizo la alianza (o 🤖 Auto Alianza)"),
-    ("{staff_nombre}", "Nombre del staff que hizo la alianza, sin mención"),
+    ("{staff_nombre}", "Nombre del staff, sin mención"),
     ("{alianzas_staff}", "Alianzas hechas por ese staff"),
     ("{afiliaciones_staff}", "Afiliaciones hechas por ese staff"),
+    ("{posicion}", "Posición del staff en el ranked (de alianzas o de afiliaciones, según el embed)"),
+    ("{posicion_alianzas}", "Posición del staff en el ranked de alianzas"),
+    ("{posicion_afiliaciones}", "Posición del staff en el ranked de afiliaciones"),
     ("{alianzas}", "Total de alianzas del servidor"),
     ("{afiliaciones}", "Total de afiliaciones del servidor"),
     ("{fecha}", "Fecha de hoy (dd/mm/aaaa)"),
@@ -365,18 +381,13 @@ VARIABLES_DOC = [
 ]
 
 
+# ---------- HISTORIAL ----------
 def ya_existe(tipo: str, a: int, b: int) -> bool:
     return any(h["tipo"] == tipo and h["aliado_id"] == b for h in gdata(a)["historial"])
 
 
 def solicitud_pendiente(s: dict) -> bool:
     return s["estado"] == "pendiente" and (time.time() - s["ts"]) < SOLICITUD_EXPIRA_DIAS * 86400
-
-
-def sumar_stat(d: dict, uid, tipo: str, n: int):
-    s = d["stats"].setdefault(str(uid), {"alianzas": 0, "afiliaciones": 0})
-    key = "alianzas" if tipo == "alianza" else "afiliaciones"
-    s[key] = max(0, s.get(key, 0) + n)
 
 
 def registrar_union(tipo: str, g_a: discord.Guild, g_b: discord.Guild, uid_a=None, uid_b=None, auto=False):
@@ -398,14 +409,31 @@ def registrar_individual(tipo: str, g: discord.Guild, info: dict, uid: int):
     guardar_datos()
 
 
-async def publicar_embed(tipo: str, g_local: discord.Guild, info: dict, staff: str,
-                         canal: Optional[discord.TextChannel] = None, ping: str = "",
-                         uid=None, staff_nombre: str = "") -> bool:
+# ---------- PUBLICAR ----------
+async def enviar_plantilla(canal: discord.TextChannel, texto: str, permitir_everyone: bool = True) -> bool:
+    """Manda la plantilla como MENSAJE NORMAL (no embed)."""
+    if not texto:
+        return True
+    try:
+        await canal.send(
+            content=texto[:2000],
+            allowed_mentions=discord.AllowedMentions(everyone=permitir_everyone, roles=False, users=False))
+        return True
+    except discord.HTTPException as e:
+        print(f"No se pudo enviar la plantilla en {canal.guild.name}: {e}")
+        return False
+
+
+async def publicar_alianza(tipo: str, g_local: discord.Guild, info: dict, staff: str,
+                           canal: Optional[discord.TextChannel] = None, ping: str = "",
+                           uid=None, staff_nombre: str = "", permitir_everyone: bool = True) -> bool:
+    """En el servidor g_local: manda la plantilla del aliado (mensaje normal) y luego el embed de alianza."""
     d = gdata(g_local.id)
     if canal is None:
         canal = canal_valido(g_local, d["canal_alianzas"] if tipo == "alianza" else d["canal_afiliaciones"])
     if canal is None:
         return False
+    await enviar_plantilla(canal, info.get("plantilla", ""), permitir_everyone)
     cfg = d["embeds"][tipo]
     vars = construir_vars(g_local, info, staff, tipo, uid, staff_nombre)
     contenido = "\n".join(p for p in (ping, aplicar(cfg.get("mensaje"), vars)) if p).strip()[:2000] or None
@@ -437,10 +465,10 @@ class ModalPlantilla(discord.ui.Modal, title="Plantilla de tu servidor"):
         self.texto = discord.ui.TextInput(
             label="Pega aquí la plantilla de tu servidor",
             style=discord.TextStyle.paragraph,
-            placeholder="Debe incluir el enlace de invitación de tu servidor",
-            default=(actual or "")[:4000] or None,
+            placeholder="Debe incluir el enlace de invitación de tu servidor (máx. 2000 caracteres)",
+            default=(actual or "")[:2000] or None,
             required=True,
-            max_length=4000)
+            max_length=2000)
         self.add_item(self.texto)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -478,7 +506,7 @@ class ModalPlantilla(discord.ui.Modal, title="Plantilla de tu servidor"):
             print(f"Error sincronizando comandos: {e}")
         await interaction.followup.send(
             f"{EMOJI_OK} Su plantilla ha sido guardada con éxito{aviso}\n"
-            f"Ya puedes usar `/embed alianza`, `/embed afiliacion`, `/leaderboard`, `/variables`, "
+            f"Ya puedes usar `/embed alianza`, `/embed afiliacion`, `/leaderboard`, `/ranked`, `/variables`, "
             f"`/alianzas_config`, `/hacer`, `/solicitar`, `/autoalianza` y `/blacklist`.\n"
             f"*(Si no los ves aún, reinicia Discord con Ctrl+R)*",
             ephemeral=True)
@@ -491,260 +519,6 @@ async def plantilla(interaction: discord.Interaction):
     if not await solo_admin(interaction):
         return
     await interaction.response.send_modal(ModalPlantilla(gdata(interaction.guild_id).get("plantilla") or ""))
-
-
-# ==========================================================
-#  MODALES PARA EL EDITOR DE TICKETS (original)
-# ==========================================================
-class ModalEditarTexto(discord.ui.Modal):
-    def __init__(self, campo: str):
-        super().__init__(title=f"Editar {campo.replace('_', ' ').capitalize()}")
-        self.campo = campo
-
-        self.valor = discord.ui.TextInput(
-            label="Nuevo valor",
-            style=discord.TextStyle.paragraph if "descripcion" in campo else discord.TextStyle.short,
-            placeholder="Escribe aquí...",
-            required=True,
-            max_length=1000
-        )
-        self.add_item(self.valor)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        config_global[self.campo] = self.valor.value
-        await interaction.response.send_message(f"✅ ¡{self.campo.replace('_', ' ').capitalize()} actualizado con éxito!", ephemeral=True)
-
-class ModalEditarURLs(discord.ui.Modal):
-    def __init__(self, campo: str):
-        super().__init__(title=f"Editar {campo.capitalize()}")
-        self.campo = campo
-
-        self.valor = discord.ui.TextInput(
-            label="Enlace URL (o escribe 'none' para quitar)",
-            style=discord.TextStyle.short,
-            placeholder="https://...",
-            required=True
-        )
-        self.add_item(self.valor)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        val = self.valor.value.strip()
-        config_global[self.campo] = None if val.lower() == "none" else val
-        await interaction.response.send_message(f"✅ ¡{self.campo.capitalize()} actualizado!", ephemeral=True)
-
-# --- VISTA DEL EDITOR VISUAL (tickets) ---
-
-class VistaEditorVisual(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="✏ Título Panel", style=discord.ButtonStyle.primary, row=0)
-    async def btn_titulo(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("titulo"))
-
-    @discord.ui.button(label="📄 Desc. Panel", style=discord.ButtonStyle.primary, row=0)
-    async def btn_desc(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("descripcion"))
-
-    @discord.ui.button(label="🎨 Color (Hex)", style=discord.ButtonStyle.primary, row=0)
-    async def btn_color(self, interaction: discord.Interaction, button: discord.ui.Button):
-        class ModalColor(discord.ui.Modal, title="Editar Color"):
-            hex_val = discord.ui.TextInput(label="Código Hex (ej: #3498db)", placeholder="#3498db", required=True)
-            async def on_submit(self, inter: discord.Interaction):
-                try:
-                    config_global["color"] = int(self.hex_val.value.replace("#", ""), 16)
-                    await inter.response.send_message("✅ ¡Color actualizado!", ephemeral=True)
-                except:
-                    await inter.response.send_message("❌ Código HEX inválido.", ephemeral=True)
-        await interaction.response.send_modal(ModalColor())
-
-    @discord.ui.button(label="📥 Título Ticket", style=discord.ButtonStyle.secondary, row=1)
-    async def btn_tticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("ticket_embed_titulo"))
-
-    @discord.ui.button(label="📄 Desc. Ticket", style=discord.ButtonStyle.secondary, row=1)
-    async def btn_dticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarTexto("ticket_embed_descripcion"))
-
-    @discord.ui.button(label="🖼️ Thumbnail", style=discord.ButtonStyle.success, row=2)
-    async def btn_thumb(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarURLs("thumbnail"))
-
-    @discord.ui.button(label="📸 Imagen", style=discord.ButtonStyle.success, row=2)
-    async def btn_image(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModalEditarURLs("image"))
-
-    @discord.ui.button(label="🚀 Publicar Panel", style=discord.ButtonStyle.danger, row=2)
-    async def btn_publicar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title=config_global["titulo"],
-            description=config_global["descripcion"],
-            color=config_global["color"]
-        )
-        if config_global["autor"]: embed.set_author(name=config_global["autor"])
-        if config_global["thumbnail"]: embed.set_thumbnail(url=config_global["thumbnail"])
-        if config_global["image"]: embed.set_image(url=config_global["image"])
-        if config_global["footer"]: embed.set_footer(text=config_global["footer"])
-
-        await interaction.channel.send(embed=embed, view=VistaApelacionBotonesPublico())
-        await interaction.response.send_message("✅ ¡Panel de tickets publicado con éxito!", ephemeral=True)
-
-class VistaApelacionBotonesPublico(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎫 Abrir Ticket / Reclamación", style=discord.ButtonStyle.danger, custom_id="btn_abrir_ticket")
-    async def boton_apelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ApelacionModal())
-
-class ApelacionModal(discord.ui.Modal, title="Formulario de Reclamación / Ticket"):
-    razon = discord.ui.TextInput(
-        label="Motivo de tu ticket o reclamación",
-        style=discord.TextStyle.paragraph,
-        placeholder="Explica detalladamente tu caso...",
-        required=True,
-        max_length=1000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        apelaciones_db.append({"usuario": str(interaction.user), "id_usuario": interaction.user.id, "razon": self.razon.value})
-        guild = interaction.guild
-        rol_obj = guild.get_role(config_global["rol_id"])
-        categoria = discord.utils.get(guild.categories, id=int(config_global["categoria_id"])) if config_global["categoria_id"] else None
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
-        }
-        if rol_obj: overwrites[rol_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
-
-        canal = await guild.create_text_channel(f"ticket-{interaction.user.name}".lower(), category=categoria, overwrites=overwrites)
-        if canal:
-            embed_ticket = discord.Embed(
-                title=config_global["ticket_embed_titulo"],
-                description=config_global["ticket_embed_descripcion"].format(usuario=interaction.user.mention, razon=self.razon.value),
-                color=config_global["color"]
-            )
-            embed_ticket.set_footer(text=config_global["ticket_embed_footer"])
-
-            class VistaCerrarTicket(discord.ui.View):
-                @discord.ui.button(label="🔒 Cerrar Ticket", style=discord.ButtonStyle.secondary, custom_id="cerrar_tk")
-                async def cerrar(self, inter: discord.Interaction, btn: discord.ui.Button):
-                    await inter.response.send_message("🔒 Cerrando canal en 3 segundos...")
-                    import asyncio
-                    await asyncio.sleep(3)
-                    await inter.channel.delete()
-
-            mencion = f"<@&{config_global['rol_id']}>" if rol_obj else ""
-            await canal.send(content=f"{mencion} ¡Nuevo ticket abierto por {interaction.user.mention}!", embed=embed_ticket, view=VistaCerrarTicket())
-            await interaction.response.send_message(f"✅ ¡Tu ticket ha sido creado correctamente en {canal.mention}!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Hubo un error al crear el canal.", ephemeral=True)
-
-
-# ==========================================================
-#  COMANDOS DE TICKETS (originales, ahora se desbloquean con /plantilla)
-# ==========================================================
-@app_commands.command(name="configurar", description="Abre el editor visual avanzado del bot")
-@app_commands.guild_only()
-async def configurar(interaction: discord.Interaction):
-    if not verificar_permisos(interaction):
-        await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
-        return
-
-    embed_preview = discord.Embed(
-        title=config_global["titulo"],
-        description=config_global["descripcion"],
-        color=config_global["color"]
-    )
-    if config_global["autor"]: embed_preview.set_author(name=config_global["autor"])
-    if config_global["thumbnail"]: embed_preview.set_thumbnail(url=config_global["thumbnail"])
-    if config_global["image"]: embed_preview.set_image(url=config_global["image"])
-    if config_global["footer"]: embed_preview.set_footer(text=config_global["footer"])
-
-    await interaction.response.send_message(
-        content="✨ **Editor Visual del Sistema de Tickets**\nUsa los botones para personalizar el panel público y el mensaje interno:",
-        embed=embed_preview,
-        view=VistaEditorVisual(),
-        ephemeral=True
-    )
-
-@app_commands.command(name="configurar_sistema", description="Define los roles y categoría")
-@app_commands.guild_only()
-async def configurar_sistema(interaction: discord.Interaction, rol_comandos: discord.Role = None, rol_staff: discord.Role = None, categoria_id: str = None):
-    if not verificar_permisos(interaction):
-        await interaction.response.send_message("❌ No tienes permisos.", ephemeral=True)
-        return
-
-    texto_resp = "✅ **Configuración actualizada:**\n"
-    if rol_comandos:
-        config_global["admin_rol_id"] = rol_comandos.id
-        texto_resp += f"- Rol comandos: {rol_comandos.mention}\n"
-    if rol_staff:
-        config_global["rol_id"] = rol_staff.id
-        texto_resp += f"- Rol staff tickets: {rol_staff.mention}\n"
-    if categoria_id:
-        config_global["categoria_id"] = categoria_id
-        texto_resp += f"- Categoría ID: `{categoria_id}`\n"
-
-    await interaction.response.send_message(texto_resp, ephemeral=True)
-
-
-# ==========================================================
-#  INFORMACIÓN Y UTILIDADES (originales)
-# ==========================================================
-@app_commands.command(name="usuario", description="Muestra información interactiva de un usuario")
-@app_commands.describe(miembro="Selecciona al usuario del que quieres ver información")
-@app_commands.guild_only()
-async def usuario(interaction: discord.Interaction, miembro: discord.Member = None):
-    usuario_obj = miembro if miembro else interaction.user
-    embed = discord.Embed(title=f"👤 Información de {usuario_obj.name}", color=usuario_obj.color)
-    embed.set_thumbnail(url=usuario_obj.display_avatar.url)
-    embed.add_field(name="🆔 ID", value=usuario_obj.id, inline=True)
-    embed.add_field(name="📅 Creación de cuenta", value=usuario_obj.created_at.strftime("%d/%m/%Y"), inline=True)
-    embed.add_field(name="📥 Ingreso al servidor", value=usuario_obj.joined_at.strftime("%d/%m/%Y") if usuario_obj.joined_at else "Desconocido", inline=True)
-
-    roles = [role.mention for role in usuario_obj.roles if role != interaction.guild.default_role]
-    roles_str = ", ".join(roles) if roles else "Ninguno"
-    if len(roles_str) > 1024: roles_str = "Muchos roles asignados"
-    embed.add_field(name=f"🛡️ Roles ({len(roles)})", value=roles_str, inline=False)
-
-    await interaction.response.send_message(embed=embed)
-
-@app_commands.command(name="servidor", description="Muestra información general del servidor")
-@app_commands.guild_only()
-async def servidor(interaction: discord.Interaction):
-    guild = interaction.guild
-    embed = discord.Embed(title=f"📊 Información de {guild.name}", color=discord.Color.purple())
-    if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    embed.add_field(name="👑 Owner", value=guild.owner.mention if guild.owner else "Desconocido", inline=True)
-    embed.add_field(name="👥 Miembros", value=str(guild.member_count), inline=True)
-    embed.add_field(name="📅 Creación", value=guild.created_at.strftime("%d/%m/%Y"), inline=True)
-    embed.add_field(name="💬 Canales de texto", value=str(len(guild.text_channels)), inline=True)
-    await interaction.response.send_message(embed=embed)
-
-@app_commands.command(name="encuesta", description="Crea una encuesta interactiva rápida")
-@app_commands.describe(pregunta="Escribe la pregunta o propuesta para la encuesta")
-@app_commands.guild_only()
-async def encuesta(interaction: discord.Interaction, pregunta: str):
-    embed = discord.Embed(title="📊 Encuesta Oficial", description=pregunta, color=discord.Color.blue())
-    embed.set_footer(text=f"Encuesta creada por {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
-
-    await interaction.response.send_message("✅ ¡Encuesta creada con éxito!")
-    mensaje = await interaction.original_response()
-    await mensaje.add_reaction("👍")
-    await mensaje.add_reaction("👎")
-
-@app_commands.command(name="dado", description="Lanza un dado interactivo")
-@app_commands.describe(caras="Número de caras del dado (por defecto 6)")
-@app_commands.guild_only()
-async def dado(interaction: discord.Interaction, caras: int = 6):
-    if caras < 2:
-        await interaction.response.send_message("❌ El dado debe tener al menos 2 caras.", ephemeral=True)
-        return
-    resultado = random.randint(1, caras)
-    await interaction.response.send_message(f"🎲 {interaction.user.mention} lanzó un dado de {caras} caras y salió: **{resultado}**")
 
 
 # ==========================================================
@@ -850,7 +624,8 @@ async def abrir_editor(interaction: discord.Interaction, tipo: str):
     nombre = "alianza" if tipo == "alianza" else "afiliación"
     await interaction.response.send_message(
         content=(f"✨ **Editor del embed de {nombre}** (así se verá, con datos de ejemplo)\n"
-                 f"Usa los botones para editarlo. Escribe `/variables` para ver todas las variables."),
+                 f"La plantilla del otro servidor se manda aparte como mensaje normal; este embed es distinto.\n"
+                 f"Escribe `/variables` para ver todas las variables, como `{{posicion}}` del ranked."),
         embed=construir_embed(cfg, vars),
         view=VistaEditorEmbed(tipo),
         ephemeral=True)
@@ -860,12 +635,12 @@ embed_group = app_commands.Group(name="embed", description="Edita los embeds de 
                                  guild_only=True, default_permissions=discord.Permissions(administrator=True))
 
 
-@embed_group.command(name="alianza", description="Edita el embed y mensaje que se publica en las alianzas")
+@embed_group.command(name="alianza", description="Edita el embed que se publica en las alianzas")
 async def embed_alianza(interaction: discord.Interaction):
     await abrir_editor(interaction, "alianza")
 
 
-@embed_group.command(name="afiliacion", description="Edita el embed y mensaje que se publica en las afiliaciones")
+@embed_group.command(name="afiliacion", description="Edita el embed que se publica en las afiliaciones")
 async def embed_afiliacion(interaction: discord.Interaction):
     await abrir_editor(interaction, "afiliacion")
 
@@ -886,9 +661,9 @@ async def variables(interaction: discord.Interaction):
 
 
 # ==========================================================
-#  /alianzas_config  (canales y mínimo de miembros)
+#  /alianzas_config  (canales, mínimo de miembros y rol de staff)
 # ==========================================================
-@app_commands.command(name="alianzas_config", description="Configura canales y mínimo de miembros para alianzas y afiliaciones")
+@app_commands.command(name="alianzas_config", description="Configura canales, mínimo de miembros y rol de staff")
 @app_commands.describe(
     canal_alianzas="Canal donde se publicarán las alianzas",
     canal_afiliaciones="Canal donde se publicarán las afiliaciones",
@@ -912,7 +687,7 @@ async def alianzas_config(interaction: discord.Interaction,
         if canal:
             d[clave] = canal.id
             if canal_valido(interaction.guild, canal.id) is None:
-                avisos.append(f"⚠️ No tengo permisos para enviar embeds en {canal.mention}.")
+                avisos.append(f"⚠️ No tengo permisos para enviar mensajes y embeds en {canal.mention}.")
     if minimo_miembros is not None:
         d["min_miembros"] = minimo_miembros
     if rol_staff:
@@ -954,19 +729,21 @@ async def sumar(interaction: discord.Interaction, tipo: app_commands.Choice[str]
     sumar_stat(d, miembro.id, tipo.value, cantidad)
     guardar_datos()
     s = d["stats"][str(miembro.id)]
+    pa, pf = posiciones(d, miembro.id)
     await interaction.response.send_message(
-        f"{EMOJI_OK} {miembro.mention} ahora tiene **{s['alianzas']}** alianzas hechas y **{s['afiliaciones']}** afiliaciones hechas.",
+        f"{EMOJI_OK} {miembro.mention} ahora tiene **{s['alianzas']}** alianzas hechas (posición #{pa}) "
+        f"y **{s['afiliaciones']}** afiliaciones hechas (posición #{pf}).",
         allowed_mentions=discord.AllowedMentions.none())
 
 
 # ==========================================================
-#  /leaderboard
+#  RANKED: /leaderboard y /ranked
 # ==========================================================
-@app_commands.command(name="leaderboard", description="Ranking del staff por alianzas y afiliaciones hechas")
+@app_commands.command(name="leaderboard", description="Ranked del staff por alianzas y afiliaciones hechas")
 @app_commands.guild_only()
 async def leaderboard(interaction: discord.Interaction):
     if not gdata(interaction.guild_id).get("plantilla"):
-        await interaction.response.send_message(f"{EMOJI_ERR} Primero debes guardar la plantilla con `/plantilla`.", ephemeral=True)
+        await interaction.response.send_message(f"{EMOJI_ERR} Primero se debe guardar la plantilla con `/plantilla`.", ephemeral=True)
         return
     stats = gdata(interaction.guild_id)["stats"]
     medallas = ["🥇", "🥈", "🥉"]
@@ -976,15 +753,44 @@ async def leaderboard(interaction: discord.Interaction):
                        key=lambda x: x[1], reverse=True)[:10]
         if not lista:
             return "Aún no hay datos."
-        return "\n".join(f"{medallas[i] if i < 3 else f'`{i + 1}.`'} <@{u}> — **{n}**" for i, (u, n) in enumerate(lista))
+        lineas = []
+        pos_prev, val_prev = 0, None
+        for i, (u, n) in enumerate(lista):
+            pos = pos_prev if n == val_prev else i + 1
+            pos_prev, val_prev = pos, n
+            icono = medallas[pos - 1] if pos <= 3 else "`" + str(pos) + ".`"
+            lineas.append(f"{icono} <@{u}> — **{n}**")
+        return "\n".join(lineas)
 
     total_a = sum(s.get("alianzas", 0) for s in stats.values())
     total_f = sum(s.get("afiliaciones", 0) for s in stats.values())
-    embed = discord.Embed(title="🏆 Leaderboard del Staff", color=0xF1C40F)
+    embed = discord.Embed(title="🏆 Ranked del Staff", color=0xF1C40F)
     embed.add_field(name="🤝 Alianzas hechas", value=top("alianzas"), inline=True)
     embed.add_field(name="🔗 Afiliaciones hechas", value=top("afiliaciones"), inline=True)
     embed.set_footer(text=f"Total: {total_a} alianzas • {total_f} afiliaciones")
     await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+
+@app_commands.command(name="ranked", description="Mira tu posición (o la de otro staff) en el ranked")
+@app_commands.describe(miembro="Staff a consultar (por defecto, tú)")
+@app_commands.guild_only()
+async def ranked(interaction: discord.Interaction, miembro: Optional[discord.Member] = None):
+    d = gdata(interaction.guild_id)
+    if not d.get("plantilla"):
+        await interaction.response.send_message(f"{EMOJI_ERR} Primero se debe guardar la plantilla con `/plantilla`.", ephemeral=True)
+        return
+    m = miembro or interaction.user
+    s = d["stats"].get(str(m.id), {"alianzas": 0, "afiliaciones": 0})
+    pa, pf = posiciones(d, m.id)
+    en_a = sum(1 for x in d["stats"].values() if x.get("alianzas", 0) > 0)
+    en_f = sum(1 for x in d["stats"].values() if x.get("afiliaciones", 0) > 0)
+    embed = discord.Embed(title=f"🏆 Ranked de {m.display_name}", color=0xF1C40F)
+    embed.set_thumbnail(url=m.display_avatar.url)
+    embed.add_field(name="🤝 Alianzas hechas",
+                    value=f"**{s.get('alianzas', 0)}**\nPosición: **{'#' + str(pa) if pa != '-' else 'Sin posición'}** de {en_a}", inline=True)
+    embed.add_field(name="🔗 Afiliaciones hechas",
+                    value=f"**{s.get('afiliaciones', 0)}**\nPosición: **{'#' + str(pf) if pf != '-' else 'Sin posición'}** de {en_f}", inline=True)
+    await interaction.response.send_message(embed=embed)
 
 
 # ==========================================================
@@ -1069,7 +875,7 @@ async def ac_servidores(interaction: discord.Interaction, current: str):
 
 
 def validar_solicitud(tipo: str, g_origen: discord.Guild, g_destino: discord.Guild) -> Optional[str]:
-    """None si todo bien; si no, el motivo."""
+    """None si todo está bien; si no, el motivo."""
     do, dd = gdata(g_origen.id), gdata(g_destino.id)
     nombre = "alianza" if tipo == "alianza" else "afiliación"
     if g_origen.id == g_destino.id:
@@ -1126,9 +932,9 @@ async def procesar_solicitud(interaction: discord.Interaction, tipo: str, servid
 
     embed = discord.Embed(
         title=f"📨 Solicitud de {nombre}",
-        description=(f"El servidor **{origen.name}** quiere una {nombre} con ustedes.\n\n"
+        description=(f"El servidor **{origen.name}** quiere una {nombre} con ustedes.\n"
+                     f"Su plantilla está en el mensaje de arriba.\n\n"
                      f"👥 **Miembros:** {origen.member_count}\n"
-                     f"🔗 **Enlace:** {do.get('invitacion') or do.get('plantilla')}\n"
                      f"👮 **Solicitada por:** {interaction.user.mention}"),
         color=0x5865F2)
     if origen.icon:
@@ -1141,7 +947,11 @@ async def procesar_solicitud(interaction: discord.Interaction, tipo: str, servid
 
     canal = canal_valido(destino, gdata(destino.id).get("canal_solicitudes"))
     try:
-        await canal.send(embed=embed, view=view)
+        # La plantilla del solicitante va como MENSAJE NORMAL (arriba), sin pings
+        await canal.send(
+            content=(do.get("plantilla") or "")[:2000],
+            embed=embed, view=view,
+            allowed_mentions=discord.AllowedMentions.none())
     except Exception as e:
         print(f"Error enviando solicitud: {e}")
         datos["solicitudes"].pop(rid, None)
@@ -1218,7 +1028,7 @@ async def manejar_boton_solicitud(interaction: discord.Interaction, cid: str):
         guardar_datos()
         emb.color = 0xE74C3C
         emb.set_footer(text=f"❌ Rechazada por {interaction.user}")
-        await interaction.message.edit(embed=emb, view=None)
+        await interaction.edit_original_response(embed=emb, view=None)
         await avisar_origen(sol, f"{EMOJI_ERR} **{destino.name}** rechazó tu solicitud de {nombre}.")
         return
 
@@ -1235,19 +1045,21 @@ async def manejar_boton_solicitud(interaction: discord.Interaction, cid: str):
 
     sol["estado"] = "aceptada"
     registrar_union(tipo, origen, destino, uid_a=sol["usuario"], uid_b=interaction.user.id)
+
+    # Cada servidor recibe la PLANTILLA del otro (mensaje normal) + su embed de alianza
     u_sol = client.get_user(sol["usuario"])
-    ok_destino = await publicar_embed(tipo, destino, info_guild(origen), interaction.user.mention,
-                                      uid=interaction.user.id, staff_nombre=interaction.user.display_name)
-    ok_origen = await publicar_embed(tipo, origen, info_guild(destino), f"<@{sol['usuario']}>",
-                                     uid=sol["usuario"], staff_nombre=u_sol.display_name if u_sol else "Staff")
+    ok_destino = await publicar_alianza(tipo, destino, info_guild(origen), interaction.user.mention,
+                                        uid=interaction.user.id, staff_nombre=interaction.user.display_name)
+    ok_origen = await publicar_alianza(tipo, origen, info_guild(destino), f"<@{sol['usuario']}>",
+                                       uid=sol["usuario"], staff_nombre=u_sol.display_name if u_sol else "Staff")
 
     emb.color = 0x2ECC71
     emb.set_footer(text=f"✅ Aceptada por {interaction.user}")
-    await interaction.message.edit(embed=emb, view=None)
+    await interaction.edit_original_response(embed=emb, view=None)
 
     msg = f"{EMOJI_OK} ¡{nombre.capitalize()} con **{origen.name}** realizada!"
     if not ok_destino:
-        msg += f"\n⚠️ No pude publicarla en tu servidor: configura el canal con `/alianzas_config` y dame permisos de enviar embeds."
+        msg += "\n⚠️ No pude publicarla en tu servidor: configura el canal con `/alianzas_config` y dame permisos de enviar mensajes y embeds."
     await interaction.followup.send(msg, ephemeral=True)
 
     aviso = f"{EMOJI_OK} **{destino.name}** aceptó tu solicitud de {nombre}. ¡Ya está hecha!"
@@ -1279,9 +1091,9 @@ class ModalHacer(discord.ui.Modal, title="Plantilla del servidor aliado"):
         self.texto = discord.ui.TextInput(
             label="Pega la plantilla del otro servidor",
             style=discord.TextStyle.paragraph,
-            placeholder="Debe incluir su enlace de invitación",
+            placeholder="Debe incluir su enlace de invitación (máx. 2000 caracteres)",
             required=True,
-            max_length=4000)
+            max_length=2000)
         self.add_item(self.texto)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -1349,8 +1161,8 @@ class ModalHacer(discord.ui.Modal, title="Plantilla del servidor aliado"):
             "representante": rep,
         }
         registrar_individual(tipo, g, info, interaction.user.id)
-        ok = await publicar_embed(tipo, g, info, interaction.user.mention,
-                                  uid=interaction.user.id, staff_nombre=interaction.user.display_name)
+        ok = await publicar_alianza(tipo, g, info, interaction.user.mention,
+                                    uid=interaction.user.id, staff_nombre=interaction.user.display_name)
         if ok:
             await interaction.followup.send(
                 f"{EMOJI_OK} La {nombre} con el servidor **{ag.name}** ha sido registrada con éxito")
@@ -1428,8 +1240,10 @@ async def ejecutar_auto():
             guardar_datos()
             for local, otro in ((g, h), (h, g)):
                 a = gdata(local.id)["auto"]
-                await publicar_embed("alianza", local, info_guild(otro), "🤖 Auto Alianza",
-                                     canal=canal_valido(local, a.get("canal")), ping=a.get("ping", ""))
+                # En auto alianza el único ping es el que configuró el servidor (no el @everyone de la plantilla ajena)
+                await publicar_alianza("alianza", local, info_guild(otro), "🤖 Auto Alianza",
+                                       canal=canal_valido(local, a.get("canal")), ping=a.get("ping", ""),
+                                       permitir_everyone=False)
             print(f"Auto alianza: {g.name} <-> {h.name}")
 
 
@@ -1504,12 +1318,11 @@ async def auto_estado(interaction: discord.Interaction):
 
 
 # ==========================================================
-#  LISTA DE COMANDOS QUE SE DESBLOQUEAN CON /plantilla
+#  COMANDOS QUE SE DESBLOQUEAN CON /plantilla
 # ==========================================================
 COMANDOS_SERVIDOR = [
-    embed_group, leaderboard, variables, alianzas_config, sumar,
+    embed_group, leaderboard, ranked, variables, alianzas_config, sumar,
     hacer_group, solicitar_group, autoalianza_group, blacklist_group,
-    configurar, configurar_sistema, usuario, servidor, encuesta, dado,
 ]
 
 cargar_datos()
